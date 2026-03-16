@@ -178,10 +178,15 @@ On startup, writes a lockfile to `~/.summarizeaudio/app.lock` containing the pro
 ```
 [User clicks "Transcribe & Summarize Audio File…"]
   - pipeline_running? → if yes, ignore (do not open file picker)
-  - Posts file picker to ui_queue → user selects .mp3/.wav/.m4a/.ogg/.flac
-  - Posts name dialog to ui_queue → default name = source filename stem + MM-DD-YY
-    (e.g. meeting.mp3 → "meeting_03-16-26"); user may override
-  - pipeline.py spawns background thread, pipeline_running set
+  - Posts file picker to ui_queue (BLOCKING — main thread waits for result)
+    - User cancels → pipeline_running is NOT set, return to idle immediately
+    - User selects file → file_path stored
+  - Posts name dialog to ui_queue (BLOCKING — main thread waits for result)
+    - Default name = source filename stem + MM-DD-YY (e.g. meeting.mp3 → "meeting_03-16-26")
+    - User cancels name dialog → uses default name
+  - pipeline_running set, pipeline.py spawns background thread
+  (Note: both dialogs resolve on main thread before pipeline thread starts;
+   no name_event.wait needed for Modes 2/3 — name is known before thread spawn)
 
 [transcriber.py]
   - Passes selected file path directly to faster-whisper (no pre-conversion)
@@ -200,10 +205,14 @@ On startup, writes a lockfile to `~/.summarizeaudio/app.lock` containing the pro
 ```
 [User clicks "Summarize Text File…"]
   - pipeline_running? → if yes, ignore (do not open file picker)
-  - Posts file picker to ui_queue → user selects .txt/.md
-  - Posts name dialog to ui_queue → default name = source filename stem + MM-DD-YY
-    (e.g. notes.txt → "notes_03-16-26"); user may override
-  - pipeline.py spawns background thread, pipeline_running set
+  - Posts file picker to ui_queue (BLOCKING — main thread waits for result)
+    - User cancels → pipeline_running is NOT set, return to idle immediately
+    - User selects file → file_path stored
+  - Posts name dialog to ui_queue (BLOCKING — main thread waits for result)
+    - Default name = source filename stem + MM-DD-YY (e.g. notes.txt → "notes_03-16-26")
+    - User cancels name dialog → uses default name
+  - pipeline_running set, pipeline.py spawns background thread
+  (Note: both dialogs resolve on main thread before pipeline thread starts)
 
 [renamer.py] → COPIES (does not move) source text → TranscriptionFiles/Transcript_{name}_MM-DD-YY.txt
                (original source file is never modified or deleted)
@@ -274,6 +283,8 @@ show_override_dialog = true   # show editable prompt dialog before every summari
 auto_open_summary = false     # open the .md file in default app after saving
 ```
 
+**`auto_open_summary` behaviour:** When `true`, opens the `.md` file in the default app after saving — macOS: `subprocess.run(["open", path])`, Windows: `os.startfile(path)`. If summarization was skipped (override dismissed or timed out) and no `.md` file was written, this option is silently ignored.
+
 **Config validation behaviour:**
 - Invalid enum values (e.g. `model = "huge"`): log warning, substitute safe default, continue.
 - Missing required key (e.g. `output_folder` absent): error popup via `ui_queue`, exit app.
@@ -309,7 +320,8 @@ After dismissal, icon returns to idle and `pipeline_running` is cleared.
 | Whisper model not downloaded | Auto-downloads on first run; fires system notification "Downloading Whisper model, this may take a few minutes…" at start, and a second notification on completion or failure. On download failure: error popup, abort. |
 | Recording < 2 seconds | Discard file, notification "Recording too short." Return to idle. |
 | Output folder / subfolder missing | Auto-created on first run. |
-| Whisper transcription failure | Error popup. `.mp3` preserved. Summarization skipped. |
+| Whisper transcription failure (Mode 1) | Error popup. `.mp3` preserved in `output_folder`. Summarization skipped. |
+| Whisper transcription failure (Mode 2) | Error popup. Delete partial `{session_id}.txt` if it exists. Source audio file untouched. Abort. |
 | Override dialog dismissed | No popup. Transcript + audio preserved. Silent idle return. |
 | Config invalid value | Warning logged, safe default used, app continues. |
 | Config missing required key | Error popup, app exits. |
