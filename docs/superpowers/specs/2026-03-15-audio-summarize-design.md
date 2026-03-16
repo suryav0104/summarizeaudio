@@ -66,13 +66,13 @@ If BlackHole is not installed on macOS, the app falls back to mic-only recording
 
 | Component | File | Responsibility |
 |---|---|---|
-| Tray Manager | `tray.py` | Entry point. Owns `pystray` lifecycle, menu state, icon state, single-instance lockfile, and `ui_queue` drain loop. |
+| Tray Manager | `tray.py` | Entry point. Owns `pystray` lifecycle, menu state, icon state, single-instance lockfile, and `ui_queue` drain loop. On startup: validates `output_folder` and all three subfolders exist, creating them if absent. |
 | UI Dispatcher | `ui_dispatcher.py` | Thread-safe `queue.Queue` (`ui_queue`) + drain function. All tkinter calls from background threads go through here. |
-| Recorder | `recorder.py` | Platform-aware audio capture. Opens mic + system loopback. Writes audio **incrementally** to a temp `.wav` on disk via chunked `wave` writes, flushing every 30 seconds. Converts `.wav` → `.mp3` via pydub on stop. Records start/end timestamps. |
+| Recorder | `recorder.py` | Platform-aware audio capture. Opens mic + system loopback. Writes audio **incrementally** to a temp `.wav` on disk via chunked `wave` writes, flushing every 30 seconds. Converts `.wav` → `.mp3` via pydub on stop. Records start/end timestamps. Requires `output_folder` to already exist (created at startup). |
 | Namer | `namer.py` | Posts a non-blocking name-input dialog to `ui_queue` immediately when recording starts. Returns the entered name (or default `Recording_MM-DD-YY`) when queried by the pipeline. |
 | Pipeline Orchestrator | `pipeline.py` | Background thread entry point for all three modes. Routes to transcriber and/or summarizer depending on mode. Posts errors to `ui_queue`. Returns icon to idle on completion or error. |
-| Transcriber | `transcriber.py` | Loads `faster-whisper` model (auto-downloads on first run). Transcribes audio file (any supported format) → `.txt`. |
-| Renamer | `renamer.py` | Moves and renames temp files into `AudioFiles/`, `TranscriptionFiles/`, `SummaryFiles/` subfolders using the user-provided session name + `MM-DD-YY` date format. |
+| Transcriber | `transcriber.py` | Loads `faster-whisper` model (auto-downloads on first run with a system notification). Passes file path directly to faster-whisper without pre-conversion; relies on the same system `ffmpeg` dependency for all format decoding (.mp3/.wav/.m4a/.ogg/.flac). Outputs `.txt`. |
+| Renamer | `renamer.py` | Moves temp files (Modes 1 & 2) or copies source text (Mode 3, never moves/deletes original) into `AudioFiles/`, `TranscriptionFiles/`, `SummaryFiles/` subfolders using the session name + `MM-DD-YY` format. Resolves filename collisions by appending `_2`, `_3`, etc. consistently across all three files in a session. |
 | Summarizer | `summarizer.py` | Builds prompt from config + optional override, calls Ollama local API via `requests`, saves `.md` summary. |
 | Notifier | `notifier.py` | Sends system notification on pipeline completion. Platform-specific fallback chain. |
 | Error Handler | `error_handler.py` | Posts error popup requests to `ui_queue`. Main thread shows `tkinter.messagebox.showerror` with component, message, and stack trace. |
@@ -114,8 +114,8 @@ Pipeline Thread (one at a time, guarded)
 - `tkinter` is **never** called from the pipeline thread. All dialogs posted to `ui_queue`, executed on main thread.
 - Icon state changes are posted to `ui_queue` from the pipeline thread.
 - `ui_queue` uses `queue.Queue` (thread-safe FIFO).
-- Override dialog: posts a `threading.Event` + result container to `ui_queue`; pipeline thread blocks on event until main thread resolves.
-- Name dialog result: stored in a `threading.Event` + string container; pipeline reads it (already resolved by the time recording stops, or uses default).
+- Override dialog: posts a `threading.Event` + result container to `ui_queue`; pipeline thread calls `event.wait(timeout=300)` — on timeout, treats as dismissal (no summary, transcript preserved).
+- Name dialog result: stored in a `threading.Event` + string container; pipeline calls `name_event.wait(timeout=30)` — on timeout or dismissal, falls back to default name.
 
 ---
 
@@ -148,7 +148,7 @@ On startup, writes a lockfile to `~/.summarizeaudio/app.lock` containing the pro
   - If duration < 2s → discard, notify "Too short", return to idle
   - Converts {session_id}.wav → {session_id}.mp3 via pydub/ffmpeg
   - Deletes {session_id}.wav
-  - Reads name from name dialog result (or uses default "Recording_MM-DD-YY")
+  - Calls name_event.wait(timeout=30) → uses entered name, or default "Recording_MM-DD-YY" on timeout/dismissal
 
 [pipeline.py — background thread, pipeline_running set]
   ↓
@@ -163,7 +163,8 @@ On startup, writes a lockfile to `~/.summarizeaudio/app.lock` containing the pro
 [summarizer.py]
   - Reads transcript, substitutes into prompt
   - If show_override_dialog = true → posts dialog to ui_queue, blocks on event
-    - User confirms → proceed | User dismisses → skip summarization, idle
+    - User confirms → proceed
+    - User dismisses or event.wait(timeout=300) expires → skip summarization, icon → idle, transcript preserved
   - POST http://localhost:11434/api/generate  { model, prompt }
   - Saves → SummaryFiles/Summary - {name}_MM-DD-YY.md
   - On failure → error popup, transcript preserved
@@ -176,27 +177,39 @@ On startup, writes a lockfile to `~/.summarizeaudio/app.lock` containing the pro
 
 ```
 [User clicks "Transcribe & Summarize Audio File…"]
-  - Posts file picker (ui_queue) → user selects .mp3/.wav/.m4a/.ogg/.flac
-  - Posts name dialog (ui_queue) → user enters session name
-  - pipeline.py spawns background thread
+  - pipeline_running? → if yes, ignore (do not open file picker)
+  - Posts file picker to ui_queue → user selects .mp3/.wav/.m4a/.ogg/.flac
+  - Posts name dialog to ui_queue → default name = source filename stem + MM-DD-YY
+    (e.g. meeting.mp3 → "meeting_03-16-26"); user may override
+  - pipeline.py spawns background thread, pipeline_running set
 
-[transcriber.py] → transcribes selected file → {session_id}.txt
+[transcriber.py]
+  - Passes selected file path directly to faster-whisper (no pre-conversion)
+  - Relies on same system ffmpeg dependency for format decoding
+  - Outputs → {session_id}.txt
+  - On failure → error popup, abort
+
 [renamer.py] → Transcript_{name}_MM-DD-YY.txt  (source audio file NOT moved/renamed)
 [summarizer.py] → Summary - {name}_MM-DD-YY.md
 [notifier.py] → notification
+[tray.py] → pipeline_running cleared, icon → idle
 ```
 
 ### Mode 3: Summarize Local Text File
 
 ```
 [User clicks "Summarize Text File…"]
-  - Posts file picker (ui_queue) → user selects .txt/.md
-  - Posts name dialog (ui_queue) → user enters session name
-  - pipeline.py spawns background thread
+  - pipeline_running? → if yes, ignore (do not open file picker)
+  - Posts file picker to ui_queue → user selects .txt/.md
+  - Posts name dialog to ui_queue → default name = source filename stem + MM-DD-YY
+    (e.g. notes.txt → "notes_03-16-26"); user may override
+  - pipeline.py spawns background thread, pipeline_running set
 
-[renamer.py] → copies text to TranscriptionFiles/Transcript_{name}_MM-DD-YY.txt
+[renamer.py] → COPIES (does not move) source text → TranscriptionFiles/Transcript_{name}_MM-DD-YY.txt
+               (original source file is never modified or deleted)
 [summarizer.py] → Summary - {name}_MM-DD-YY.md
 [notifier.py] → notification
+[tray.py] → pipeline_running cleared, icon → idle
 ```
 
 ---
@@ -219,9 +232,14 @@ All output files use the user-provided session name + today's date (`MM-DD-YY`),
   3f2a1b4c-....txt
 ```
 
-**Default name** (if user dismisses name dialog or doesn't type before stop): `Recording_MM-DD-YY`
+**Default names** (if user dismisses dialog or timeout expires):
+- Mode 1 (live recording): `Recording_MM-DD-YY`
+- Mode 2 (local audio file): source filename stem + `_MM-DD-YY` (e.g. `meeting_03-16-26`)
+- Mode 3 (local text file): source filename stem + `_MM-DD-YY` (e.g. `notes_03-16-26`)
 
-For modes 2 and 3, the source audio file is **not moved or renamed** — only the transcript and summary outputs are saved to the subfolders.
+**Duplicate filename collision:** If a file with the same name already exists in the target subfolder, `renamer.py` appends an incrementing counter: `_2`, `_3`, etc. The counter is applied consistently across all three files in the same session (audio, transcript, summary) so they remain correlated.
+
+For modes 2 and 3, the source file is **never moved, renamed, or modified** — only transcript and summary outputs are saved to the subfolders.
 
 ---
 
@@ -288,7 +306,7 @@ After dismissal, icon returns to idle and `pipeline_running` is cleared.
 | `ffmpeg` not installed | Error popup with install instructions (`brew install ffmpeg` / `choco install ffmpeg`). Recording discarded. |
 | Ollama not running / unreachable | Error popup: "Ollama not found at {host}. Start Ollama and try again." Transcript preserved. |
 | Ollama model not pulled | Error popup: "Model {model} not found. Run: ollama pull {model}". Transcript preserved. |
-| Whisper model not downloaded | Auto-downloads on first run; amber icon + tooltip. On download failure: error popup, abort. |
+| Whisper model not downloaded | Auto-downloads on first run; fires system notification "Downloading Whisper model, this may take a few minutes…" at start, and a second notification on completion or failure. On download failure: error popup, abort. |
 | Recording < 2 seconds | Discard file, notification "Recording too short." Return to idle. |
 | Output folder / subfolder missing | Auto-created on first run. |
 | Whisper transcription failure | Error popup. `.mp3` preserved. Summarization skipped. |
@@ -321,10 +339,15 @@ After dismissal, icon returns to idle and `pipeline_running` is cleared.
 | `transcriber.py` | Integration — transcribe short fixture audio, verify `.txt` output |
 | `summarizer.py` | Integration — mock Ollama HTTP endpoint, verify prompt construction and `.md` output |
 | `notifier.py` | Smoke — fire notification on each platform, verify no crash |
-| `pipeline.py` (mode 1) | End-to-end — fixture `.mp3` through full pipeline, verify 3 output files |
-| `pipeline.py` (mode 2) | End-to-end — local audio file through pipeline, verify transcript + summary |
-| `pipeline.py` (mode 3) | End-to-end — local text file through pipeline, verify summary only |
-| `tray.py` concurrency | Unit — pipeline_running guard: second click ignored while pipeline active |
+| `pipeline.py` (mode 1) | End-to-end — fixture `.mp3` through full pipeline, verify 3 output files in correct subfolders |
+| `pipeline.py` (mode 1) | Edge case — recording < 2s: verify files discarded, notification sent, icon returns to idle |
+| `pipeline.py` (mode 1/2) | Edge case — override dialog dismissed: verify no summary file, no error popup, icon returns to idle, transcript preserved |
+| `pipeline.py` (mode 1) | Edge case — override dialog timeout (300s): verify same behaviour as dismissal |
+| `pipeline.py` (mode 1) | Edge case — duplicate session name: verify `_2` suffix applied consistently across all 3 output files |
+| `pipeline.py` (mode 2) | End-to-end — local audio file through pipeline, verify transcript + summary; source file untouched |
+| `pipeline.py` (mode 3) | End-to-end — local text file through pipeline, verify summary only; source file untouched |
+| `renamer.py` | Unit — collision resolution: same name twice produces `_name_MM-DD-YY.ext` and `_name_MM-DD-YY_2.ext` |
+| `tray.py` concurrency | Unit — pipeline_running guard: Mode 2/3 menu clicks ignored while pipeline active |
 
 CI matrix runs against macOS and Windows runners.
 
