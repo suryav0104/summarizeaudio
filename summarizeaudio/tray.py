@@ -5,7 +5,6 @@ import platform
 import queue
 import sys
 import threading
-import traceback
 from datetime import date
 from pathlib import Path
 
