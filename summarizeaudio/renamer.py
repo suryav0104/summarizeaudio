@@ -53,6 +53,7 @@ class Renamer:
             shutil.move(str(txt_path), txt_dest)
 
         summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
+        summary_dest.parent.mkdir(parents=True, exist_ok=True)
 
         return SessionPaths(audio=audio_dest, transcript=txt_dest, summary=summary_dest)
 
@@ -64,6 +65,7 @@ class Renamer:
         txt_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source_txt), txt_dest)
         summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
+        summary_dest.parent.mkdir(parents=True, exist_ok=True)
         return SessionPaths(audio=None, transcript=txt_dest, summary=summary_dest)
 
     def summary_path(self, name: str) -> Path:

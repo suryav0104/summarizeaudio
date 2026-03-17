@@ -103,6 +103,7 @@ class Summarizer:
                 continue
 
         summary = "".join(text_parts).strip()
+        out_md.parent.mkdir(parents=True, exist_ok=True)
         out_md.write_text(summary, encoding="utf-8")
         log.info("Summary written: %d chars → %s", len(summary), out_md)
 
