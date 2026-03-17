@@ -14,7 +14,9 @@ def notify(message: str, title: str = "SummarizeAudio") -> None:
 
 
 def _notify_macos(title: str, message: str) -> None:
-    script = f'display notification "{message}" with title "{title}"'
+    safe_msg = message.replace('"', '\\"')
+    safe_title = title.replace('"', '\\"')
+    script = f'display notification "{safe_msg}" with title "{safe_title}"'
     try:
         subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
     except Exception:
