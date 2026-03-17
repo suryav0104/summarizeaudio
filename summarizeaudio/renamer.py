@@ -31,6 +31,9 @@ class Renamer:
 
         The same collision suffix is applied to all three output files (audio,
         transcript, summary) so they remain correlated.
+
+        Note: SessionPaths.transcript is always set to the computed destination path.
+        It may point to a non-existent file if txt_path was not provided.
         """
         today = _today()
         # Determine a single suffix that avoids collisions across all three subfolders.
@@ -41,10 +44,12 @@ class Renamer:
         audio_dest: Path | None = None
         if mp3_path is not None:
             audio_dest = self._root / "AudioFiles" / f"Audio_{name}_{today}{suffix}.mp3"
+            audio_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(mp3_path), audio_dest)
 
         txt_dest = self._root / "TranscriptionFiles" / f"Transcript_{name}_{today}{suffix}.txt"
         if txt_path is not None:
+            txt_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(txt_path), txt_dest)
 
         summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
@@ -56,6 +61,7 @@ class Renamer:
         today = _today()
         suffix = _find_collision_suffix(name, today, self._root, has_audio=False)
         txt_dest = self._root / "TranscriptionFiles" / f"Transcript_{name}_{today}{suffix}.txt"
+        txt_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source_txt), txt_dest)
         summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
         return SessionPaths(audio=None, transcript=txt_dest, summary=summary_dest)
