@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import queue
 import traceback
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from summarizeaudio.error_handler import post_error
 from summarizeaudio.notifier import notify
@@ -28,14 +31,18 @@ class Transcriber:
     def _load_model(self) -> None:
         from faster_whisper import WhisperModel
         if self._model is None:
-            if not self._is_model_cached():
+            cached = self._is_model_cached()
+            log.info("Whisper model '%s' cached=%s — loading", self._model_name, cached)
+            if not cached:
                 notify(f"Downloading Whisper '{self._model_name}' model, this may take a few minutes…")
             else:
                 notify(f"Loading Whisper '{self._model_name}' model…")
             try:
                 self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
+                log.info("Whisper model '%s' loaded", self._model_name)
                 notify("Whisper model ready.")
             except Exception as exc:
+                log.exception("Failed to load Whisper model '%s'", self._model_name)
                 post_error(self._ui_queue, "transcriber.py → faster_whisper",
                            str(exc), traceback.format_exc())
                 raise
@@ -44,13 +51,17 @@ class Transcriber:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         self._load_model()
-        # faster-whisper expects language=None for auto-detection, not the string "auto"
         lang = None if self._language == "auto" else self._language
+        log.info("Transcribing %s (language=%s)", audio_path.name, lang)
         try:
-            segments, _ = self._model.transcribe(str(audio_path), language=lang)
+            segments, info = self._model.transcribe(str(audio_path), language=lang)
+            log.info("Transcription detected language=%s duration=%.1fs",
+                     getattr(info, "language", "?"), getattr(info, "duration", 0))
             text = " ".join(seg.text.strip() for seg in segments)
             out_txt.write_text(text, encoding="utf-8")
+            log.info("Transcription written: %d chars → %s", len(text), out_txt)
         except Exception as exc:
+            log.exception("Transcription error for %s", audio_path)
             post_error(self._ui_queue, "transcriber.py → faster_whisper",
                        str(exc), traceback.format_exc())
             raise

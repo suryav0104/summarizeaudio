@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import enum
+import logging
 import queue
 import threading
 import traceback
 from pathlib import Path
 from uuid import uuid4
+
+log = logging.getLogger(__name__)
 
 from summarizeaudio.config import AppConfig
 from summarizeaudio.error_handler import post_error
@@ -40,9 +43,14 @@ class Pipeline:
         (whether by success or exception). Tray passes pipeline_running here so
         the icon always resets to idle.
         """
+        log.info("Pipeline starting: mode=%s session=%r", mode.value, session_name)
         try:
             self._run_inner(mode, session_name, mp3_path, source_path)
+        except Exception:
+            log.exception("Pipeline failed: mode=%s session=%r", mode.value, session_name)
+            raise
         finally:
+            log.info("Pipeline finished: mode=%s session=%r", mode.value, session_name)
             if done_event is not None:
                 done_event.clear()
 
@@ -70,12 +78,14 @@ class Pipeline:
         if mode == PipelineMode.LOCAL_TEXT:
             # Mode 3: copy text → summarize
             assert source_path is not None
+            log.info("Mode 3: copying text file %s", source_path)
             session = renamer.copy_text_session(session_name, source_path)
             transcript_text = session.transcript.read_text(encoding="utf-8")
+            log.info("Mode 3: summarizing %d chars", len(transcript_text))
             try:
                 summarizer.summarize(transcript_text, session.summary)
             except Exception:
-                pass  # error already posted; transcript preserved
+                log.exception("Mode 3: summarization failed (continuing)")
             notify(f"Summary ready — {session.summary.read_text()[:200]}"
                    if session.summary.exists() else "Processing complete.")
             return
@@ -91,28 +101,35 @@ class Pipeline:
             assert source_path is not None
             audio_for_transcription = source_path
 
+        log.info("Transcribing %s → %s", audio_for_transcription.name, tmp_txt.name)
         try:
             transcriber.transcribe(audio_for_transcription, tmp_txt)
         except Exception as exc:
+            log.exception("Transcription failed for %s", audio_for_transcription)
             post_error(self._ui_queue, "pipeline.py → transcriber",
                        str(exc), traceback.format_exc())
-            # Mode 2: clean up partial txt; Mode 1: keep mp3 for retry
             if mode == PipelineMode.LOCAL_AUDIO and tmp_txt.exists():
                 tmp_txt.unlink()
             raise
+        log.info("Transcription complete, output: %s", tmp_txt)
 
         # Rename and move
         if mode == PipelineMode.RECORD:
             session = renamer.rename_session(session_name, mp3_path=mp3_path, txt_path=tmp_txt)
         else:
-            # Mode 2: only move the transcript (source audio untouched)
             session = renamer.rename_session(session_name, mp3_path=None, txt_path=tmp_txt)
+        log.info("Files moved → transcript=%s", session.transcript)
 
         transcript_text = session.transcript.read_text(encoding="utf-8")
+        log.info("Summarizing %d chars → %s", len(transcript_text), session.summary)
         try:
             summarizer.summarize(transcript_text, session.summary)
         except Exception:
-            pass  # error already posted; transcript preserved
+            log.exception("Summarization failed (continuing)")
 
-        notify(f"Summary ready — {session.summary.read_text()[:200]}"
-               if session.summary.exists() else "Transcription complete.")
+        if session.summary.exists():
+            log.info("Summary written: %s (%d bytes)", session.summary, session.summary.stat().st_size)
+            notify(f"Summary ready — {session.summary.read_text()[:200]}")
+        else:
+            log.warning("Summary file not created")
+            notify("Transcription complete.")

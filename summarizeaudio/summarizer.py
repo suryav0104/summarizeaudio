@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import subprocess
 import sys
 import threading
 import traceback
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 import requests
 
@@ -44,6 +47,7 @@ class Summarizer:
 
     def summarize(self, transcript: str, out_md: Path) -> None:
         prompt = self._summ_cfg.default_prompt.replace("{transcript}", transcript)
+        log.info("Summarize: %d-char transcript → %s (model=%s)", len(transcript), out_md.name, self._ollama.model)
 
         if self._beh.show_override_dialog:
             override = _OverrideEvent()
@@ -51,15 +55,19 @@ class Summarizer:
             try:
                 self._ui_queue.put_nowait(("override_dialog", override, prompt))
                 posted = True
+                log.debug("Override dialog posted to ui_queue")
             except queue.Full:
-                pass
+                log.warning("ui_queue full — skipping override dialog, using default prompt")
             if posted:
+                log.debug("Waiting for override dialog response (timeout=300s)")
                 result = override.wait(timeout=300)
                 if result is None:
-                    return  # user dismissed — skip summarization
+                    log.info("Override dialog dismissed — skipping summarization")
+                    return
+                log.debug("Override dialog resolved, prompt length=%d", len(result))
                 prompt = result
-            # If not posted (queue full), proceed with the default prompt
 
+        log.info("POSTing to Ollama %s/api/generate (model=%s)", self._ollama.host, self._ollama.model)
         try:
             response = requests.post(
                 f"{self._ollama.host}/api/generate",
@@ -68,7 +76,9 @@ class Summarizer:
                 timeout=120,
             )
             response.raise_for_status()
+            log.info("Ollama responded HTTP %d — streaming tokens", response.status_code)
         except Exception as exc:
+            log.exception("Ollama request failed")
             post_error(self._ui_queue, "summarizer.py → Ollama",
                        str(exc), traceback.format_exc())
             raise
@@ -82,12 +92,14 @@ class Summarizer:
                 chunk = json.loads(line)
                 text_parts.append(chunk.get("response", ""))
                 if chunk.get("done"):
+                    log.info("Ollama stream complete — %d chars generated", sum(len(p) for p in text_parts))
                     break
             except json.JSONDecodeError:
                 continue
 
         summary = "".join(text_parts).strip()
         out_md.write_text(summary, encoding="utf-8")
+        log.info("Summary written: %d chars → %s", len(summary), out_md)
 
         if self._beh.auto_open_summary:
             _open_file(out_md)
