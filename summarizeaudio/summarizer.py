@@ -46,14 +46,17 @@ class Summarizer:
         self._ui_queue = ui_queue
 
     def summarize(self, transcript: str, out_md: Path) -> None:
-        prompt = self._summ_cfg.default_prompt.replace("{transcript}", transcript)
+        template = self._summ_cfg.default_prompt
         log.info("Summarize: %d-char transcript → %s (model=%s)", len(transcript), out_md.name, self._ollama.model)
 
         if self._beh.show_override_dialog:
+            # Show the template (with {transcript} placeholder, not the full expanded prompt)
+            # so it fits within AppleScript's ~254-char default-answer limit.
+            # The transcript is injected after the user confirms.
             override = _OverrideEvent()
             posted = False
             try:
-                self._ui_queue.put_nowait(("override_dialog", override, prompt))
+                self._ui_queue.put_nowait(("override_dialog", override, template))
                 posted = True
                 log.debug("Override dialog posted to ui_queue")
             except queue.Full:
@@ -64,8 +67,10 @@ class Summarizer:
                 if result is None:
                     log.info("Override dialog dismissed — skipping summarization")
                     return
-                log.debug("Override dialog resolved, prompt length=%d", len(result))
-                prompt = result
+                log.debug("Override dialog resolved, template length=%d", len(result))
+                template = result
+
+        prompt = template.replace("{transcript}", transcript)
 
         log.info("POSTing to Ollama %s/api/generate (model=%s)", self._ollama.host, self._ollama.model)
         try:
