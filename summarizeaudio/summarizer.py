@@ -4,6 +4,7 @@ import json
 import queue
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -16,7 +17,6 @@ from summarizeaudio.error_handler import post_error
 class _OverrideEvent:
     """Holds prompt override result from ui_queue dialog."""
     def __init__(self) -> None:
-        import threading
         self._event = threading.Event()
         self._prompt: str | None = None
 
@@ -47,14 +47,18 @@ class Summarizer:
 
         if self._beh.show_override_dialog:
             override = _OverrideEvent()
+            posted = False
             try:
                 self._ui_queue.put_nowait(("override_dialog", override, prompt))
+                posted = True
             except queue.Full:
                 pass
-            result = override.wait(timeout=300)
-            if result is None:
-                return  # user dismissed — skip summarization
-            prompt = result
+            if posted:
+                result = override.wait(timeout=300)
+                if result is None:
+                    return  # user dismissed — skip summarization
+                prompt = result
+            # If not posted (queue full), proceed with the default prompt
 
         try:
             response = requests.post(
