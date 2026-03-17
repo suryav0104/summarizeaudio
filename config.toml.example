@@ -1,0 +1,23 @@
+[storage]
+output_folder = "~/AudioSummaries"
+
+[whisper]
+model = "base"      # tiny | base | small | medium | large
+language = "en"     # set to "auto" for auto-detect
+
+[ollama]
+host = "http://localhost:11434"
+model = "mistral-small3.2:24b"
+
+[summarization]
+default_prompt = """
+You are a helpful assistant. Summarize the following transcript concisely.
+Highlight key decisions, action items, and important points.
+
+Transcript:
+{transcript}
+"""
+
+[behavior]
+show_override_dialog = true
+auto_open_summary = false
