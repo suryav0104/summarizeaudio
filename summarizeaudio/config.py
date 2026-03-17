@@ -31,8 +31,12 @@ host = "http://localhost:11434"
 model = "mistral-small3.2:24b"
 
 [summarization]
-default_prompt = \"\"\"You are a helpful assistant. Summarize the following transcript concisely.
-Highlight key decisions, action items, and important points.
+default_prompt = \"\"\"You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
+
+Summarize the transcript below. Structure the output as:
+- **Key Points:** the main ideas or topics covered
+- **Decisions / Action Items:** anything decided or that requires follow-up (omit section if none)
+- **Notable Details:** anything else worth remembering
 
 Transcript:
 {transcript}\"\"\"
