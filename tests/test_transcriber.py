@@ -30,7 +30,7 @@ def test_transcriber_output_is_string(tmp_path, ui_queue):
     t = Transcriber(model="tiny", language="en", ui_queue=ui_queue)
     out_txt = tmp_path / "out.txt"
     t.transcribe(wav, out_txt)
-    content = out_txt.read_text()
+    content = out_txt.read_text(encoding="utf-8")
     assert isinstance(content, str)
 
 
