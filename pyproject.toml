@@ -21,5 +21,8 @@ dependencies = [
 [project.scripts]
 summarizeaudio = "summarizeaudio.__main__:main"
 
+[tool.setuptools.packages.find]
+include = ["summarizeaudio*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
