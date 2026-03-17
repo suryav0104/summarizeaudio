@@ -76,6 +76,7 @@ class TrayApp:
         self._dispatcher.register("override_dialog", self._on_override_dialog)
         self._dispatcher.register("local_audio_flow", self._run_local_audio_flow)
         self._dispatcher.register("local_text_flow", self._run_local_text_flow)
+        self._dispatcher.register("summary_ready", self._on_summary_ready)
 
     # ── Menu actions ──────────────────────────────────────────────────────────
 
@@ -217,6 +218,26 @@ class TrayApp:
             ttk.Button(frame, text="Skip", command=cancel).pack(side="left", padx=5)
             frame.pack(pady=(0, 10))
             root.mainloop()
+
+    def _on_summary_ready(self, path: Path) -> None:
+        if sys.platform == "darwin":
+            safe_name = _as_safe(path.name)
+            rc, out = _osascript(
+                f'display dialog "Summary ready:\\n{safe_name}" '
+                f'buttons {{"Dismiss", "Open"}} default button "Open" '
+                f'with title "SummarizeAudio"'
+            )
+            if rc == 0 and "button returned:Open" in out:
+                subprocess.run(["open", str(path)], check=False)
+        else:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            if messagebox.askyesno("SummarizeAudio", f"Summary ready!\n\n{path.name}\n\nOpen it?"):
+                import os
+                os.startfile(str(path))
+            root.destroy()
 
     def _run_local_audio_flow(self) -> None:
         if sys.platform == "darwin":

@@ -86,8 +86,10 @@ class Pipeline:
                 summarizer.summarize(transcript_text, session.summary)
             except Exception:
                 log.exception("Mode 3: summarization failed (continuing)")
-            notify(f"Summary ready — {session.summary.read_text()[:200]}"
-                   if session.summary.exists() else "Processing complete.")
+            if session.summary.exists():
+                self._ui_queue.put_nowait(("summary_ready", session.summary))
+            else:
+                notify("Processing complete.")
             return
 
         # Mode 1 or 2: transcribe first
@@ -129,7 +131,7 @@ class Pipeline:
 
         if session.summary.exists():
             log.info("Summary written: %s (%d bytes)", session.summary, session.summary.stat().st_size)
-            notify(f"Summary ready — {session.summary.read_text()[:200]}")
+            self._ui_queue.put_nowait(("summary_ready", session.summary))
         else:
             log.warning("Summary file not created")
             notify("Transcription complete.")
