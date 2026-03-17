@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import subprocess
 import sys
 import threading
 from datetime import date
@@ -21,6 +22,17 @@ from summarizeaudio.ui_dispatcher import UIDispatcher
 
 ASSETS = Path(__file__).parent.parent / "assets"
 LOCK_FILE = Path.home() / ".summarizeaudio" / "app.lock"
+
+
+def _osascript(script: str) -> tuple[int, str]:
+    """Run an AppleScript snippet; returns (returncode, stdout)."""
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    return r.returncode, r.stdout.strip()
+
+
+def _as_safe(s: str) -> str:
+    """Escape a string for embedding inside an AppleScript double-quoted literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _load_icon(name: str) -> Image.Image:
@@ -127,69 +139,120 @@ class TrayApp:
         self._set_icon(state)
 
     def _on_error(self, component: str, message: str, tb: str) -> None:
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk(); root.withdraw()
-        messagebox.showerror("SummarizeAudio Error", format_error(component, message, tb))
-        root.destroy()
+        msg = format_error(component, message, tb)
+        if sys.platform == "darwin":
+            safe = _as_safe(msg[:800])
+            _osascript(
+                f'display dialog "{safe}" buttons {{"OK"}} default button "OK" '
+                f'with icon stop with title "SummarizeAudio Error"'
+            )
+        else:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("SummarizeAudio Error", msg)
+            root.destroy()
         self._pipeline_running.clear()
         self._set_icon("idle")
         self._rebuild_menu()
 
     def _on_name_dialog(self, namer: Namer) -> None:
-        import tkinter as tk
-        from tkinter import simpledialog
-        root = tk.Tk(); root.withdraw()
-        result = simpledialog.askstring(
-            "Session Name", "Enter a name for this recording:",
-            parent=root,
-        )
-        root.destroy()
-        namer._resolve(result)
+        if sys.platform == "darwin":
+            default_val = _as_safe(namer._default)
+            rc, out = _osascript(
+                f'display dialog "Enter a name for this recording:" '
+                f'default answer "{default_val}" with title "Session Name"'
+            )
+            if rc == 0:
+                text = out.split("text returned:")[-1].strip()
+                namer._resolve(text if text else None)
+            else:
+                namer._resolve(None)
+        else:
+            import tkinter as tk
+            from tkinter import simpledialog
+            root = tk.Tk(); root.withdraw()
+            result = simpledialog.askstring(
+                "Session Name", "Enter a name for this recording:", parent=root,
+            )
+            root.destroy()
+            namer._resolve(result)
 
     def _on_override_dialog(self, override, prompt: str) -> None:
-        import tkinter as tk
-        from tkinter.scrolledtext import ScrolledText
-        root = tk.Tk()
-        root.title("Edit Summarization Prompt")
-        text = ScrolledText(root, width=80, height=20)
-        text.insert("1.0", prompt)
-        text.pack(padx=10, pady=10)
+        if sys.platform == "darwin":
+            # AppleScript dialog has a ~254-char limit on default answer; truncate gracefully
+            safe_prompt = _as_safe(prompt[:250])
+            rc, out = _osascript(
+                f'display dialog "Edit summarization prompt:" '
+                f'default answer "{safe_prompt}" '
+                f'buttons {{"Skip", "Summarize"}} default button "Summarize" '
+                f'with title "SummarizeAudio"'
+            )
+            if rc == 0 and "button returned:Summarize" in out:
+                text = out.split("text returned:")[-1].strip()
+                override._resolve(text)
+            else:
+                override._resolve(None)
+        else:
+            import tkinter as tk
+            from tkinter.scrolledtext import ScrolledText
+            root = tk.Tk()
+            root.title("Edit Summarization Prompt")
+            text = ScrolledText(root, width=80, height=20)
+            text.insert("1.0", prompt)
+            text.pack(padx=10, pady=10)
 
-        def confirm():
-            override._resolve(text.get("1.0", "end-1c"))
-            root.destroy()
+            def confirm():
+                override._resolve(text.get("1.0", "end-1c"))
+                root.destroy()
 
-        def cancel():
-            override._resolve(None)
-            root.destroy()
+            def cancel():
+                override._resolve(None)
+                root.destroy()
 
-        import tkinter.ttk as ttk
-        frame = tk.Frame(root)
-        ttk.Button(frame, text="Summarize", command=confirm).pack(side="left", padx=5)
-        ttk.Button(frame, text="Skip", command=cancel).pack(side="left", padx=5)
-        frame.pack(pady=(0, 10))
-        root.mainloop()
+            import tkinter.ttk as ttk
+            frame = tk.Frame(root)
+            ttk.Button(frame, text="Summarize", command=confirm).pack(side="left", padx=5)
+            ttk.Button(frame, text="Skip", command=cancel).pack(side="left", padx=5)
+            frame.pack(pady=(0, 10))
+            root.mainloop()
 
     def _run_local_audio_flow(self) -> None:
-        import tkinter as tk
-        from tkinter import filedialog, simpledialog
-        root = tk.Tk(); root.withdraw()
-        path_str = filedialog.askopenfilename(
-            title="Select Audio File",
-            filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac")],
-        )
-        root.destroy()
-        if not path_str:
-            return  # picker cancelled — pipeline_running NOT set yet
-        source = Path(path_str)
-        today = date.today().strftime("%m-%d-%y")
-        root2 = tk.Tk(); root2.withdraw()
-        name = simpledialog.askstring(
-            "Session Name", "Enter a name for this session:",
-            initialvalue=f"{source.stem}_{today}", parent=root2,
-        ) or f"{source.stem}_{today}"
-        root2.destroy()
+        if sys.platform == "darwin":
+            rc, path_str = _osascript(
+                'set f to choose file with prompt "Select Audio File"\n'
+                'return POSIX path of f'
+            )
+            if rc != 0 or not path_str:
+                return
+            source = Path(path_str)
+            today = date.today().strftime("%m-%d-%y")
+            default_val = _as_safe(f"{source.stem}_{today}")
+            rc2, out = _osascript(
+                f'display dialog "Enter a name for this session:" '
+                f'default answer "{default_val}" with title "Session Name"'
+            )
+            name = (out.split("text returned:")[-1].strip()
+                    if rc2 == 0 else f"{source.stem}_{today}") or f"{source.stem}_{today}"
+        else:
+            import tkinter as tk
+            from tkinter import filedialog, simpledialog
+            root = tk.Tk(); root.withdraw()
+            path_str = filedialog.askopenfilename(
+                title="Select Audio File",
+                filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac")],
+            )
+            root.destroy()
+            if not path_str:
+                return
+            source = Path(path_str)
+            today = date.today().strftime("%m-%d-%y")
+            root2 = tk.Tk(); root2.withdraw()
+            name = simpledialog.askstring(
+                "Session Name", "Enter a name for this session:",
+                initialvalue=f"{source.stem}_{today}", parent=root2,
+            ) or f"{source.stem}_{today}"
+            root2.destroy()
         # Set pipeline_running AFTER both dialogs complete with a valid path
         self._pipeline_running.set()
         self._set_icon("processing")
@@ -207,24 +270,41 @@ class TrayApp:
         threading.Thread(target=run, daemon=True).start()
 
     def _run_local_text_flow(self) -> None:
-        import tkinter as tk
-        from tkinter import filedialog, simpledialog
-        root = tk.Tk(); root.withdraw()
-        path_str = filedialog.askopenfilename(
-            title="Select Text File",
-            filetypes=[("Text files", "*.txt *.md")],
-        )
-        root.destroy()
-        if not path_str:
-            return  # picker cancelled — pipeline_running NOT set yet
-        source = Path(path_str)
-        today = date.today().strftime("%m-%d-%y")
-        root2 = tk.Tk(); root2.withdraw()
-        name = simpledialog.askstring(
-            "Session Name", "Enter a name for this session:",
-            initialvalue=f"{source.stem}_{today}", parent=root2,
-        ) or f"{source.stem}_{today}"
-        root2.destroy()
+        if sys.platform == "darwin":
+            rc, path_str = _osascript(
+                'set f to choose file with prompt "Select Text File"\n'
+                'return POSIX path of f'
+            )
+            if rc != 0 or not path_str:
+                return
+            source = Path(path_str)
+            today = date.today().strftime("%m-%d-%y")
+            default_val = _as_safe(f"{source.stem}_{today}")
+            rc2, out = _osascript(
+                f'display dialog "Enter a name for this session:" '
+                f'default answer "{default_val}" with title "Session Name"'
+            )
+            name = (out.split("text returned:")[-1].strip()
+                    if rc2 == 0 else f"{source.stem}_{today}") or f"{source.stem}_{today}"
+        else:
+            import tkinter as tk
+            from tkinter import filedialog, simpledialog
+            root = tk.Tk(); root.withdraw()
+            path_str = filedialog.askopenfilename(
+                title="Select Text File",
+                filetypes=[("Text files", "*.txt *.md")],
+            )
+            root.destroy()
+            if not path_str:
+                return
+            source = Path(path_str)
+            today = date.today().strftime("%m-%d-%y")
+            root2 = tk.Tk(); root2.withdraw()
+            name = simpledialog.askstring(
+                "Session Name", "Enter a name for this session:",
+                initialvalue=f"{source.stem}_{today}", parent=root2,
+            ) or f"{source.stem}_{today}"
+            root2.destroy()
         # Set pipeline_running AFTER both dialogs complete with a valid path
         self._pipeline_running.set()
         self._set_icon("processing")
@@ -279,9 +359,9 @@ class TrayApp:
         self._rebuild_menu()
 
         def setup(icon: pystray.Icon) -> None:
-            """Called by pystray on the main thread after the icon is displayed.
-            We drive the drain loop here so all tkinter calls execute on the
-            main thread — required by both macOS Cocoa and Windows."""
+            """Called by pystray after the icon is displayed (background thread on macOS,
+            main thread on Windows). Drains the ui_queue; on macOS all dialogs use
+            osascript so there is no tkinter main-thread requirement."""
             icon.visible = True
             while icon.visible:
                 time.sleep(0.1)
