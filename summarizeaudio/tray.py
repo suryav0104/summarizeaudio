@@ -137,6 +137,7 @@ class TrayApp:
 
     def _on_set_icon(self, state: str) -> None:
         self._set_icon(state)
+        self._rebuild_menu()
 
     def _on_error(self, component: str, message: str, tb: str) -> None:
         msg = format_error(component, message, tb)
