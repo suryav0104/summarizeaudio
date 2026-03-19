@@ -1,1 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+venv/
+venv-win/
+.venv/
+env/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Logs & debug
+*.log
+firebase-debug.log
+
+# Config with real values (lives in ~/.summarizeaudio/ — never in the repo)
+config.toml
+
+# Worktrees
 .worktrees/
+
+# IDE
+.idea/
+.vscode/
