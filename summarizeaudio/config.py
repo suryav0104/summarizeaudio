@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import subprocess
 import sys
 import traceback
 from dataclasses import dataclass
@@ -18,9 +19,37 @@ LOG_PATH = CONFIG_DIR / "app.log"
 
 VALID_WHISPER_MODELS = {"tiny", "base", "small", "medium", "large"}
 
-DEFAULT_TOML = """\
+
+def _select_model_for_ram() -> str:
+    """Return the recommended Ollama model based on available system RAM."""
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+            ram_bytes = int(result.stdout.strip())
+        elif sys.platform == "win32":
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum"],
+                capture_output=True, text=True,
+            )
+            ram_bytes = int(result.stdout.strip())
+        else:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        ram_bytes = int(line.split()[1]) * 1024
+                        break
+                else:
+                    return "gemma3:4b"
+    except Exception:
+        return "gemma3:4b"
+    return "gemma3:12b" if ram_bytes > 8 * 1024 ** 3 else "gemma3:4b"
+
+
+def _make_default_toml(model: str) -> str:
+    return f"""\
 [storage]
-output_folder = "~/AudioSummaries"
+output_folder = "~/Applications/SummarizeAudio/AudioSummaries"
 
 [whisper]
 model = "base"
@@ -28,7 +57,7 @@ language = "en"
 
 [ollama]
 host = "http://localhost:11434"
-model = "mistral-small3.2:24b"
+model = "{model}"
 
 [summarization]
 default_prompt = \"\"\"You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
@@ -39,12 +68,21 @@ Summarize the transcript below. Structure the output as:
 - **Notable Details:** anything else worth remembering
 
 Transcript:
-{transcript}\"\"\"
+{{transcript}}\"\"\"
 
 [behavior]
 show_override_dialog = true
 auto_open_summary = false
+
+[recording]
+# Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
+# Set to an exact device name to override, e.g. "Voice + System Audio" for an Aggregate Device.
+input_device = ""
 """
+
+
+# Stable constant used by tests and anywhere that needs a representative TOML blob.
+DEFAULT_TOML = _make_default_toml("gemma3:4b")
 
 
 @dataclass
@@ -76,19 +114,25 @@ class BehaviorConfig:
 
 
 @dataclass
+class RecordingConfig:
+    input_device: str | None  # None = auto-detect BlackHole; set to exact device name to override
+
+
+@dataclass
 class AppConfig:
     storage: StorageConfig
     whisper: WhisperConfig
     ollama: OllamaConfig
     summarization: SummarizationConfig
     behavior: BehaviorConfig
+    recording: RecordingConfig
 
 
 def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
     """Load config.toml, creating default if absent."""
     if not CONFIG_PATH.exists():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(DEFAULT_TOML)
+        CONFIG_PATH.write_text(_make_default_toml(_select_model_for_ram()))
 
     try:
         raw = tomllib.loads(CONFIG_PATH.read_text())
@@ -101,6 +145,7 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
     ollama_raw = raw.get("ollama", {})
     summ = raw.get("summarization", {})
     beh = raw.get("behavior", {})
+    rec = raw.get("recording", {})
 
     # Required key: output_folder
     if "output_folder" not in storage:
@@ -123,7 +168,7 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
         ),
         ollama=OllamaConfig(
             host=ollama_raw.get("host", "http://localhost:11434"),
-            model=ollama_raw.get("model", "mistral-small3.2:24b"),
+            model=ollama_raw.get("model", "gemma3:4b"),
         ),
         summarization=SummarizationConfig(
             default_prompt=summ.get("default_prompt", "Summarize:\n{transcript}"),
@@ -131,6 +176,9 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
         behavior=BehaviorConfig(
             show_override_dialog=beh.get("show_override_dialog", True),
             auto_open_summary=beh.get("auto_open_summary", False),
+        ),
+        recording=RecordingConfig(
+            input_device=rec.get("input_device") or None,
         ),
     )
 

@@ -11,7 +11,7 @@ import pytest
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.config import (
     AppConfig, StorageConfig, WhisperConfig, OllamaConfig,
-    SummarizationConfig, BehaviorConfig,
+    SummarizationConfig, BehaviorConfig, RecordingConfig,
 )
 
 
@@ -26,6 +26,7 @@ def make_config(tmp_output):
         ollama=OllamaConfig(host="http://localhost:11434", model="x"),
         summarization=SummarizationConfig(default_prompt="Summarize: {transcript}"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
+        recording=RecordingConfig(input_device=None),
     )
 
 
@@ -55,7 +56,7 @@ def test_mode1_produces_three_output_files(tmp_output, ui_queue, monkeypatch):
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("fake transcript", encoding="utf-8"),
+        lambda self, audio, out_txt: out_txt.write_text("fake transcript content for testing purposes", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     mp3 = make_silence_mp3(tmp_output / "session.mp3")

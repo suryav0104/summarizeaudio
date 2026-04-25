@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from summarizeaudio.summarizer import Summarizer
+from summarizeaudio.summarizer import Summarizer, OllamaError
 from summarizeaudio.config import OllamaConfig, SummarizationConfig, BehaviorConfig
 
 
@@ -70,13 +70,11 @@ def test_summarizer_skips_on_override_dismissed(tmp_path, ui_queue):
     assert not out_md.exists()
 
 
-def test_summarizer_ollama_connection_error_posts_to_queue(tmp_path, ui_queue):
+def test_summarizer_ollama_connection_error_raises_ollama_error(tmp_path, ui_queue):
     s = make_summarizer(tmp_path, ui_queue)
     out_md = tmp_path / "summary.md"
     import requests
     with patch("requests.post", side_effect=requests.ConnectionError("refused")):
-        with pytest.raises(Exception):
+        with pytest.raises(OllamaError):
             s.summarize("text", out_md)
-    assert not ui_queue.empty()
-    item = ui_queue.get_nowait()
-    assert item[0] == "error"
+    assert not out_md.exists()

@@ -24,14 +24,14 @@ def test_loads_valid_config(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.config.CONFIG_DIR", tmp_path)
     cfg = load_config()
     assert cfg.whisper.model == "base"
-    assert cfg.ollama.model == "mistral-small3.2:24b"
+    assert cfg.ollama.model == "gemma3:4b"
     assert cfg.behavior.show_override_dialog is True
 
 
 def test_invalid_whisper_model_falls_back_to_base(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[whisper]\nmodel = "huge"\nlanguage = "en"\n'
-                        '[storage]\noutput_folder = "~/AudioSummaries"\n'
+                        '[storage]\noutput_folder = "~/Applications/SummarizeAudio/AudioSummaries"\n'
                         '[ollama]\nhost = "http://localhost:11434"\nmodel = "x"\n'
                         '[summarization]\ndefault_prompt = "s {transcript}"\n'
                         '[behavior]\nshow_override_dialog = true\nauto_open_summary = false\n')

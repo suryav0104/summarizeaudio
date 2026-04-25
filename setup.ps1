@@ -6,8 +6,12 @@
 $ErrorActionPreference = "Stop"
 
 # ── Config ────────────────────────────────────────────────────────────────────
-$OllamaModel = "devstral-small-2:24b"   # change this if you switch models
 $AppName     = "SummarizeAudio"
+
+# Detect RAM and pick an appropriate model
+$RamBytes    = (Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum
+$RamGB       = [math]::Floor($RamBytes / 1GB)
+$OllamaModel = if ($RamGB -gt 8) { "gemma3:12b" } else { "gemma3:4b" }
 $InstallDir  = "$env:LOCALAPPDATA\Programs\$AppName"
 $OutputDir   = "$InstallDir\AudioSummaries"
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -74,6 +78,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Success "Ollama already installed"
 }
 
+Info "Detected ${RamGB}GB RAM — using model: $OllamaModel"
 Info "Downloading AI model '$OllamaModel' — this may take several minutes on first run..."
 ollama pull $OllamaModel
 Success "AI model $OllamaModel ready"

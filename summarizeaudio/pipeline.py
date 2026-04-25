@@ -14,7 +14,7 @@ from summarizeaudio.config import AppConfig
 from summarizeaudio.error_handler import post_error
 from summarizeaudio.notifier import notify
 from summarizeaudio.renamer import Renamer
-from summarizeaudio.summarizer import Summarizer
+from summarizeaudio.summarizer import Summarizer, OllamaError
 from summarizeaudio.transcriber import Transcriber
 
 
@@ -80,12 +80,14 @@ class Pipeline:
             assert source_path is not None
             log.info("Mode 3: copying text file %s", source_path)
             session = renamer.copy_text_session(session_name, source_path)
-            transcript_text = session.transcript.read_text(encoding="utf-8")
+            transcript_text = session.transcript.read_text(encoding="utf-8-sig", errors="replace")
             log.info("Mode 3: summarizing %d chars", len(transcript_text))
             try:
                 summarizer.summarize(transcript_text, session.summary)
-            except Exception:
-                log.exception("Mode 3: summarization failed (continuing)")
+            except OllamaError as exc:
+                log.exception("Mode 3: Ollama unavailable")
+                self._ui_queue.put_nowait(("fatal_error", "Ollama is not running or has crashed.", str(exc)))
+                return
             if session.summary.exists():
                 self._ui_queue.put_nowait(("summary_ready", session.summary))
             else:
@@ -102,6 +104,13 @@ class Pipeline:
         else:
             assert source_path is not None
             audio_for_transcription = source_path
+
+        AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".webm"}
+        if audio_for_transcription.suffix.lower() not in AUDIO_EXTENSIONS:
+            post_error(self._ui_queue, "pipeline.py",
+                       f"'{audio_for_transcription.name}' is not a supported audio file. "
+                       f"Please select an audio file (mp3, wav, m4a, etc.).", "")
+            return
 
         log.info("Transcribing %s → %s", audio_for_transcription.name, tmp_txt.name)
         try:
@@ -122,12 +131,20 @@ class Pipeline:
             session = renamer.rename_session(session_name, mp3_path=None, txt_path=tmp_txt)
         log.info("Files moved → transcript=%s", session.transcript)
 
-        transcript_text = session.transcript.read_text(encoding="utf-8")
+        transcript_text = session.transcript.read_text(encoding="utf-8-sig", errors="replace").strip()
+        if len(transcript_text) < 20:
+            log.warning("Transcript too short (%d chars) — skipping summarization", len(transcript_text))
+            post_error(self._ui_queue, "pipeline.py",
+                       f"Recording captured no usable audio (transcript: '{transcript_text}'). "
+                       "Check your input device in System Settings → Sound → Input.", "")
+            return
         log.info("Summarizing %d chars → %s", len(transcript_text), session.summary)
         try:
             summarizer.summarize(transcript_text, session.summary)
-        except Exception:
-            log.exception("Summarization failed (continuing)")
+        except OllamaError as exc:
+            log.exception("Ollama unavailable")
+            self._ui_queue.put_nowait(("fatal_error", "Ollama is not running or has crashed.", str(exc)))
+            return
 
         if session.summary.exists():
             log.info("Summary written: %s (%d bytes)", session.summary, session.summary.stat().st_size)

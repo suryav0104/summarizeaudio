@@ -17,6 +17,10 @@ from summarizeaudio.config import BehaviorConfig, OllamaConfig, SummarizationCon
 from summarizeaudio.error_handler import post_error
 
 
+class OllamaError(RuntimeError):
+    """Raised when Ollama is unreachable or returns an unexpected error."""
+
+
 class _OverrideEvent:
     """Holds prompt override result from ui_queue dialog."""
     def __init__(self) -> None:
@@ -84,9 +88,7 @@ class Summarizer:
             log.info("Ollama responded HTTP %d — streaming tokens", response.status_code)
         except Exception as exc:
             log.exception("Ollama request failed")
-            post_error(self._ui_queue, "summarizer.py → Ollama",
-                       str(exc), traceback.format_exc())
-            raise
+            raise OllamaError(str(exc)) from exc
 
         # Accumulate streamed response
         text_parts: list[str] = []

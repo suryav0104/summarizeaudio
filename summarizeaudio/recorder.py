@@ -33,9 +33,18 @@ def _get_loopback_device() -> int | None:
     return None
 
 
+def _find_device_by_name(name: str) -> int | None:
+    """Return device index for a device whose name contains `name` (case-insensitive)."""
+    for i, dev in enumerate(sd.query_devices()):
+        if name.lower() in dev["name"].lower() and dev["max_input_channels"] > 0:
+            return i
+    return None
+
+
 class Recorder:
-    def __init__(self, output_folder: Path) -> None:
+    def __init__(self, output_folder: Path, input_device: str | None = None) -> None:
         self._output_folder = output_folder
+        self._input_device = input_device
         self._session_id: str | None = None
         self._wav_path: Path | None = None
         self._raw_file = None  # raw file handle for portable flush
@@ -57,13 +66,19 @@ class Recorder:
         self._start_time = datetime.now()
         self._chunk_count = 0
 
-        loopback_device = _get_loopback_device()
-        if loopback_device is None and not getattr(self, "_loopback_warned", False):
-            self._loopback_warned = True
-            if platform.system() == "Darwin":
-                notify("System audio not found. Recording mic only. Install BlackHole for system audio capture.")
-            elif platform.system() == "Windows":
-                notify("No WASAPI loopback device found. Recording mic only.")
+        if self._input_device:
+            loopback_device = _find_device_by_name(self._input_device)
+            if loopback_device is None and not getattr(self, "_loopback_warned", False):
+                self._loopback_warned = True
+                notify(f"Configured input device '{self._input_device}' not found. Recording from system default.")
+        else:
+            loopback_device = _get_loopback_device()
+            if loopback_device is None and not getattr(self, "_loopback_warned", False):
+                self._loopback_warned = True
+                if platform.system() == "Darwin":
+                    notify("System audio not found. Recording mic only. Install BlackHole for system audio capture.")
+                elif platform.system() == "Windows":
+                    notify("No WASAPI loopback device found. Recording mic only.")
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,

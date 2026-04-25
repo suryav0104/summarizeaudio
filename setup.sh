@@ -1,18 +1,45 @@
 #!/usr/bin/env bash
 # SummarizeAudio one-time setup for macOS
-# Run from the project directory: bash setup.sh
+#
+# Usage:
+#   From a local clone:  bash setup.sh
+#   One-command install: curl -fsSL https://raw.githubusercontent.com/suryav0104/summarizeaudio/main/setup.sh | bash
 
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-OLLAMA_MODEL="devstral-small-2:24b"   # change this if you switch models
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OLLAMA_MODEL="gemma3:4b"
+INSTALL_DIR="$HOME/Applications/SummarizeAudio"
+REPO_URL="https://github.com/suryav0104/summarizeaudio.git"
+
+# Detect whether we're running via curl-pipe (no BASH_SOURCE) or local clone
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" ]]; then
+    # curl | bash — clone the repo first
+    RUNNING_VIA_CURL=1
+    SCRIPT_DIR="$INSTALL_DIR"
+else
+    RUNNING_VIA_CURL=0
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 info()    { echo "[setup] $*"; }
 success() { echo "[setup] ✓ $*"; }
 warn()    { echo "[setup] ⚠ $*"; }
 die()     { echo "[setup] ✗ $*" >&2; exit 1; }
+
+# ── Clone repo (curl-pipe mode only) ─────────────────────────────────────────
+if [[ "$RUNNING_VIA_CURL" -eq 1 ]]; then
+    if [[ -d "$INSTALL_DIR/.git" ]]; then
+        info "Updating existing install at $INSTALL_DIR..."
+        git -C "$INSTALL_DIR" pull --ff-only
+    else
+        info "Cloning SummarizeAudio to $INSTALL_DIR..."
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
+    success "Repo ready at $INSTALL_DIR"
+fi
 
 # ── Python ────────────────────────────────────────────────────────────────────
 if ! command -v python3 &>/dev/null; then
@@ -24,6 +51,28 @@ if [[ "$PYTHON_VERSION" != "True" ]]; then
     die "Python 3.11+ required. Current: $(python3 --version)"
 fi
 success "Python $(python3 --version)"
+
+# ── BlackHole (virtual audio driver for system audio capture) ────────────────
+if [[ "$(uname)" == "Darwin" ]]; then
+    if ! system_profiler SPAudioDataType 2>/dev/null | grep -q "BlackHole"; then
+        if command -v brew &>/dev/null; then
+            info "Installing BlackHole 2ch (virtual audio driver)..."
+            brew install --cask blackhole-2ch
+            success "BlackHole 2ch installed"
+            warn "ACTION REQUIRED: Open 'Audio MIDI Setup' (in /Applications/Utilities) and"
+            warn "create an Aggregate Device combining 'BlackHole 2ch' and your microphone."
+            warn "Then set that Aggregate Device as the input in ~/.summarizeaudio/config.toml:"
+            warn "  [recording]"
+            warn "  input_device = \"<your aggregate device name>\""
+        else
+            warn "BlackHole not found and Homebrew not available."
+            warn "Install Homebrew first (https://brew.sh), then re-run to get BlackHole."
+            warn "Without BlackHole, system audio (other party) will not be captured."
+        fi
+    else
+        success "BlackHole already installed"
+    fi
+fi
 
 # ── ffmpeg ────────────────────────────────────────────────────────────────────
 if ! command -v ffmpeg &>/dev/null; then
@@ -73,14 +122,71 @@ info "Installing SummarizeAudio and dependencies..."
 venv/bin/pip install -e . -q
 success "SummarizeAudio installed"
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# ── Write config if not already present ──────────────────────────────────────
+CONFIG_DIR="$HOME/.summarizeaudio"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
+mkdir -p "$CONFIG_DIR"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    info "Writing config..."
+    cat > "$CONFIG_FILE" << TOML
+[storage]
+output_folder = "$SCRIPT_DIR/AudioSummaries"
+
+[whisper]
+model = "base"
+language = "en"
+
+[ollama]
+host = "http://localhost:11434"
+model = "$OLLAMA_MODEL"
+
+[summarization]
+default_prompt = """You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
+
+Summarize the transcript below. Structure the output as:
+- **Key Points:** the main ideas or topics covered
+- **Decisions / Action Items:** anything decided or that requires follow-up (omit section if none)
+- **Notable Details:** anything else worth remembering
+
+Transcript:
+{transcript}"""
+
+[behavior]
+show_override_dialog = true
+auto_open_summary = false
+TOML
+    success "Config written to $CONFIG_FILE"
+else
+    info "Config already exists — leaving it unchanged"
+fi
+
+# ── Done — user instructions ──────────────────────────────────────────────────
 echo ""
-echo "══════════════════════════════════════════"
+echo "══════════════════════════════════════════════════════════"
 echo "  Setup complete!"
 echo ""
-echo "  To run the app:"
-echo "    venv/bin/python -m summarizeaudio"
+echo "  HOW TO LAUNCH"
+echo "  Run this command to start the app:"
+echo "    $SCRIPT_DIR/venv/bin/python -m summarizeaudio"
 echo ""
-echo "  Config file: ~/.summarizeaudio/config.toml"
-echo "  Log file:    ~/.summarizeaudio/app.log"
-echo "══════════════════════════════════════════"
+echo "  TIP: Add an alias to your shell profile:"
+echo "    alias summarizeaudio='$SCRIPT_DIR/venv/bin/python -m summarizeaudio'"
+echo "  A small icon will appear in your macOS menu bar (top-right)."
+echo ""
+echo "  HOW TO USE"
+echo "  Click the menu bar icon to see options:"
+echo "    • Record & Summarize  — record from microphone"
+echo "    • Transcribe Audio    — pick an existing audio file"
+echo "    • Summarize Text      — pick an existing text file"
+echo ""
+echo "  WHERE YOUR FILES ARE SAVED"
+echo "    $SCRIPT_DIR/AudioSummaries/"
+echo "      AudioFiles/          recorded audio (.mp3)"
+echo "      TranscriptionFiles/  transcripts (.txt)"
+echo "      SummaryFiles/        summaries (.md)"
+echo ""
+echo "  SETTINGS"
+echo "    Edit $CONFIG_FILE"
+echo "    to change the AI model, language, or output folder."
+echo "══════════════════════════════════════════════════════════"

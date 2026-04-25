@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -51,6 +52,7 @@ class TrayApp:
         self._ui_queue: queue.Queue = queue.Queue()
         self._dispatcher = UIDispatcher(self._ui_queue)
         self._pipeline_running = threading.Event()
+        self._stop_event = threading.Event()
         self._recorder: Recorder | None = None
         self._namer: Namer | None = None
         self._cfg = load_config(self._ui_queue)
@@ -72,6 +74,7 @@ class TrayApp:
         # Register all ui_queue handlers up front (must happen before run())
         self._dispatcher.register("set_icon", self._on_set_icon)
         self._dispatcher.register("error", self._on_error)
+        self._dispatcher.register("fatal_error", self._on_fatal_error)
         self._dispatcher.register("name_dialog", self._on_name_dialog)
         self._dispatcher.register("override_dialog", self._on_override_dialog)
         self._dispatcher.register("local_audio_flow", self._run_local_audio_flow)
@@ -85,7 +88,7 @@ class TrayApp:
             return
         today = date.today().strftime("%m-%d-%y")
         self._namer = Namer(self._ui_queue, default=f"Recording_{today}")
-        self._recorder = Recorder(self._cfg.storage.output_folder)
+        self._recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
         self._recorder.start()
         self._set_icon("recording")
         self._rebuild_menu()
@@ -132,6 +135,7 @@ class TrayApp:
 
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
+        self._stop_event.set()
         icon.stop()
 
     # ── UI queue handlers (run on main thread) ────────────────────────────────
@@ -157,6 +161,24 @@ class TrayApp:
         self._pipeline_running.clear()
         self._set_icon("idle")
         self._rebuild_menu()
+
+    def _on_fatal_error(self, message: str, detail: str) -> None:
+        msg = f"{message}\n\n{detail}" if detail else message
+        if sys.platform == "darwin":
+            safe = _as_safe(msg[:800])
+            _osascript(
+                f'display dialog "{safe}" buttons {{"Quit"}} default button "Quit" '
+                f'with icon stop with title "SummarizeAudio — Fatal Error"'
+            )
+        else:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("SummarizeAudio — Fatal Error", msg)
+            root.destroy()
+        LOCK_FILE.unlink(missing_ok=True)
+        self._stop_event.set()
+        self._tray.stop()
 
     def _on_name_dialog(self, namer: Namer) -> None:
         if sys.platform == "darwin":
@@ -192,6 +214,11 @@ class TrayApp:
             )
             if rc == 0 and "button returned:Summarize" in out:
                 text = out.split("text returned:")[-1].strip()
+                # AppleScript truncates default answer at ~254 chars, which cuts off
+                # {transcript}. Restore it from the original prompt if missing.
+                if "{transcript}" not in text:
+                    idx = prompt.find("{transcript}")
+                    text = text + prompt[len(text):] if idx != -1 else text + "\n\nTranscript:\n{transcript}"
                 override._resolve(text)
             else:
                 override._resolve(None)
@@ -242,7 +269,8 @@ class TrayApp:
     def _run_local_audio_flow(self) -> None:
         if sys.platform == "darwin":
             rc, path_str = _osascript(
-                'set f to choose file with prompt "Select Audio File"\n'
+                'set f to choose file with prompt "Select Audio File" '
+                'of type {"mp3", "wav", "m4a", "ogg", "flac", "public.audio"}\n'
                 'return POSIX path of f'
             )
             if rc != 0 or not path_str:
@@ -385,9 +413,17 @@ class TrayApp:
             main thread on Windows). Drains the ui_queue; on macOS all dialogs use
             osascript so there is no tkinter main-thread requirement."""
             icon.visible = True
-            while icon.visible:
+            while not self._stop_event.is_set():
                 time.sleep(0.1)
                 self._dispatcher.drain()
+
+        def _handle_signal(sig, frame):
+            LOCK_FILE.unlink(missing_ok=True)
+            self._stop_event.set()
+            self._tray.stop()
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
 
         self._tray.run(setup=setup)
 
