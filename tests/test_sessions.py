@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from summarizeaudio import sessions as session_store
-from summarizeaudio.sessions import discover_sessions, session_action_specs, session_for_summary_path
+from summarizeaudio.sessions import archive_session, discover_sessions, load_sessions, session_action_specs, session_for_summary_path
 
 
 def test_discover_sessions_orders_newest_first_and_filters_missing_files(tmp_path):
@@ -101,3 +101,74 @@ def test_session_for_summary_path_recovers_matching_artifacts(tmp_path):
         ("Open Transcript", transcript),
         ("Open Recording", audio),
     ]
+
+
+def test_archive_session_toggles_visibility_in_sqlite(tmp_path, monkeypatch):
+    root = tmp_path / "Output"
+    summary_dir = root / "SummaryFiles"
+    summary_dir.mkdir(parents=True)
+    summary = summary_dir / "Summary - Topic_05-10-26.md"
+    summary.write_text("summary")
+
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    sessions = discover_sessions(root, limit=None)
+    assert sessions
+    session_id = sessions[0].id
+
+    archive_session(session_id, archived=True)
+    assert load_sessions(root, include_archived=False) == []
+    archived_sessions = load_sessions(root, include_archived=True)
+    assert archived_sessions
+    assert archived_sessions[0].archived is True
+
+    archive_session(session_id, archived=False)
+    restored_sessions = load_sessions(root, include_archived=False)
+    assert restored_sessions
+    assert restored_sessions[0].archived is False
+
+
+def test_initial_history_migration_archives_only_existing_tail_once(tmp_path, monkeypatch):
+    root = tmp_path / "Output"
+    summary_dir = root / "SummaryFiles"
+    transcript_dir = root / "TranscriptionFiles"
+    audio_dir = root / "AudioFiles"
+    summary_dir.mkdir(parents=True)
+    transcript_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    summaries = []
+    for idx in range(12):
+        day = f"05-{idx + 1:02d}-26"
+        summary = summary_dir / f"Summary - Topic{idx}_{day}.md"
+        transcript = transcript_dir / f"Transcript_Topic{idx}_{day}.txt"
+        audio = audio_dir / f"Audio_Topic{idx}_{day}.mp3"
+        summary.write_text(f"summary {idx}")
+        transcript.write_text(f"transcript {idx}")
+        audio.write_text(f"audio {idx}")
+        summaries.append(summary)
+
+    first_pass = discover_sessions(root, limit=None)
+    assert len(first_pass) == 10
+
+    with sqlite3.connect(db_path) as conn:
+        archived_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE archived = 1").fetchone()[0]
+        assert archived_count == 2
+
+    extra_summary = summary_dir / "Summary - Extra_05-20-26.md"
+    extra_transcript = transcript_dir / "Transcript_Extra_05-20-26.txt"
+    extra_audio = audio_dir / "Audio_Extra_05-20-26.mp3"
+    extra_summary.write_text("summary extra")
+    extra_transcript.write_text("transcript extra")
+    extra_audio.write_text("audio extra")
+
+    second_pass = discover_sessions(root, limit=None)
+    assert len(second_pass) == 11
+
+    with sqlite3.connect(db_path) as conn:
+        archived_count_after = conn.execute("SELECT COUNT(*) FROM sessions WHERE archived = 1").fetchone()[0]
+        assert archived_count_after == 2

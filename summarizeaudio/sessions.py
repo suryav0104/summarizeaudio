@@ -14,6 +14,7 @@ _SESSION_SUMMARY_RE = re.compile(
 )
 
 HISTORY_DB = CONFIG_DIR / "history.sqlite3"
+_HISTORY_MIGRATION_KEY = "archive_initial_history_v1"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
     required_columns = {
         "id": "TEXT",
@@ -101,6 +110,42 @@ def _session_id_for_key(source_key: str) -> str:
 
 def _session_key_for_summary(summary: Path) -> str:
     return summary.stem
+
+
+def _metadata_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+    return None if row is None else row["value"]
+
+
+def _metadata_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO metadata (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def _is_in_root(folder: str, root: Path) -> bool:
+    root_resolved = root.resolve()
+    folder_path = Path(folder).resolve()
+    return root_resolved == folder_path or root_resolved in folder_path.parents
+
+
+def _maybe_archive_initial_sessions(conn: sqlite3.Connection, root: Path, keep: int = 10) -> None:
+    migration_key = f"{_HISTORY_MIGRATION_KEY}::{root.resolve()}"
+    if _metadata_get(conn, migration_key) is not None:
+        return
+
+    rows = conn.execute(
+        "SELECT id, folder, completed_at, created_at, label FROM sessions WHERE archived = 0"
+    ).fetchall()
+    scoped = [row for row in rows if _is_in_root(row["folder"], root)]
+    scoped.sort(key=lambda row: (row["completed_at"] or "", row["created_at"] or "", row["label"] or ""), reverse=True)
+    for row in scoped[keep:]:
+        conn.execute("UPDATE sessions SET archived = 1 WHERE id = ?", (row["id"],))
+    _metadata_set(conn, migration_key, datetime.now(tz=timezone.utc).isoformat())
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionFiles:
@@ -166,9 +211,6 @@ def _scan_filesystem_sessions(root: Path) -> list[SessionFiles]:
 
 def sync_sessions_from_filesystem(root: Path) -> None:
     discovered = _scan_filesystem_sessions(root)
-    if not discovered:
-        return
-
     with _connect() as conn:
         _ensure_schema(conn)
         for session in discovered:
@@ -231,6 +273,7 @@ def sync_sessions_from_filesystem(root: Path) -> None:
                     session.source_key,
                 ),
             )
+        _maybe_archive_initial_sessions(conn, root, keep=10)
         conn.commit()
 
 
