@@ -187,7 +187,7 @@ class HistoryWindow:
             ttk.Label(body, text=empty_detail, style="Detail.TLabel").pack(anchor="w", pady=(8, 16))
             actions = ttk.Frame(body, style="Card.TFrame")
             actions.pack(fill="x")
-            self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
+            self._button(actions, text="Close", command=self._close, primary=True).pack(side="left")
             return
 
         list_shell = ttk.Frame(body, style="Card.TFrame")
@@ -228,7 +228,7 @@ class HistoryWindow:
 
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(fill="x", pady=(12, 0))
-        self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
+        self._button(actions, text="Close", command=self._close, primary=False).pack(side="left")
 
     def _toggle_archived_filter(self) -> None:
         self._show_archived = not self._show_archived

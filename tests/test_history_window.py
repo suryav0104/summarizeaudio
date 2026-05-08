@@ -109,10 +109,11 @@ class FakeButton:
     def __init__(self, parent, **kwargs):
         self.parent = parent
         self.kwargs = kwargs
+        self.pack_calls = []
         FakeButton.instances.append(self)
 
     def pack(self, *args, **kwargs):
-        pass
+        self.pack_calls.append((args, kwargs))
 
 
 def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
@@ -468,6 +469,92 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].items == [("0", "Archived (05-08-26)", ("05-08-26",), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Live Sessions" for btn in FakeButton.instances)
+
+
+def test_history_window_close_button_is_left_aligned(tmp_path, monkeypatch):
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("summary")
+
+    monkeypatch.setattr(
+        "summarizeaudio.history_window.load_config",
+        lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})(),
+    )
+    monkeypatch.setattr(
+        "summarizeaudio.history_window.load_sessions",
+        lambda root, limit=None, include_archived=False: [],
+    )
+
+    class FakeRoot:
+        def __init__(self):
+            self.children = []
+
+        def withdraw(self):
+            pass
+
+        def title(self, *_args):
+            pass
+
+        def geometry(self, *_args):
+            pass
+
+        def minsize(self, *_args):
+            pass
+
+        def resizable(self, *_args):
+            pass
+
+        def configure(self, *_args, **_kwargs):
+            pass
+
+        def protocol(self, *_args):
+            pass
+
+        def update_idletasks(self):
+            pass
+
+        def winfo_screenwidth(self):
+            return 1920
+
+        def winfo_screenheight(self):
+            return 1080
+
+        def lift(self):
+            pass
+
+        def attributes(self, *_args):
+            pass
+
+        def after(self, *_args):
+            pass
+
+        def focus_force(self):
+            pass
+
+        def mainloop(self):
+            pass
+
+        def destroy(self):
+            pass
+
+        def winfo_children(self):
+            return self.children
+
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: type("S", (), {"theme_use": lambda *a, **k: None, "configure": lambda *a, **k: None, "map": lambda *a, **k: None})())
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Scrollbar", FakeScrollbar)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Treeview", FakeTreeview)
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Button", FakeButton)
+    FakeButton.instances.clear()
+    FakeLabel.instances.clear()
+
+    window = history_window.HistoryWindow()
+    window._render()
+
+    close_button = next(btn for btn in FakeButton.instances if btn.kwargs.get("text") == "Close")
+    assert close_button.pack_calls[-1][1]["side"] == "left"
 
 
 def test_history_window_open_file_uses_open_on_macos(tmp_path, monkeypatch):
