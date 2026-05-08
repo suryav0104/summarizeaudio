@@ -49,6 +49,38 @@ def test_summarizer_substitutes_transcript_into_prompt(tmp_path, ui_queue):
     assert "HELLO WORLD" in captured["prompt"]
 
 
+def test_summarizer_chunks_long_transcript_and_combines_summaries(tmp_path, ui_queue):
+    s = make_summarizer(tmp_path, ui_queue)
+    out_md = tmp_path / "summary.md"
+    prompts = []
+    responses = iter(
+        [
+            mock_ollama_response("Chunk summary one."),
+            mock_ollama_response("Chunk summary two."),
+            mock_ollama_response("Chunk summary three."),
+            mock_ollama_response("Final combined summary."),
+        ]
+    )
+
+    long_transcript = ("Mobile checkout drop-off is the main issue. Billing screen is confusing. " * 160).strip()
+    assert len(long_transcript) > 8000
+
+    def fake_post(url, json=None, stream=False, timeout=None):
+        prompts.append(json.get("prompt", ""))
+        return next(responses)
+
+    with patch("requests.post", side_effect=fake_post):
+        s.summarize(long_transcript, out_md)
+
+    assert out_md.exists()
+    assert out_md.read_text() == "Final combined summary."
+    assert len(prompts) == 4
+    assert "Chunk summary one." in prompts[-1]
+    assert "Chunk summary two." in prompts[-1]
+    assert "Chunk summary three." in prompts[-1]
+    assert "Combine them into one final summary" in prompts[-1]
+
+
 def test_summarizer_skips_on_override_dismissed(tmp_path, ui_queue):
     # The override event is posted INSIDE summarize(), so we must call
     # summarize() on a background thread and resolve the event from the test thread.

@@ -16,6 +16,10 @@ import requests
 from summarizeaudio.config import BehaviorConfig, OllamaConfig, SummarizationConfig
 from summarizeaudio.error_handler import friendly_message
 
+_CHUNK_TRIGGER_CHARS = 8000
+_CHUNK_TARGET_CHARS = 6000
+_CHUNK_OVERLAP_CHARS = 500
+
 
 class OllamaError(RuntimeError):
     """Raised when Ollama is unreachable or returns an unexpected error."""
@@ -74,8 +78,39 @@ class Summarizer:
                 log.debug("Override dialog resolved, template length=%d", len(result))
                 template = result
 
-        prompt = template.replace("{transcript}", transcript)
+        transcript_chunks = _chunk_transcript(transcript)
+        if len(transcript_chunks) <= 1:
+            summary = self._summarize_prompt(template.replace("{transcript}", transcript))
+        else:
+            log.info(
+                "Transcript exceeds chunk threshold (%d chars) — summarizing in %d chunks",
+                len(transcript),
+                len(transcript_chunks),
+            )
+            chunk_summaries: list[str] = []
+            for idx, chunk_text in enumerate(transcript_chunks, start=1):
+                log.info("Summarizing chunk %d/%d (%d chars)", idx, len(transcript_chunks), len(chunk_text))
+                chunk_summary = self._summarize_prompt(template.replace("{transcript}", chunk_text))
+                chunk_summaries.append(chunk_summary)
+            combined_input = (
+                "These are summaries of chunks from one longer transcript. "
+                "Combine them into one final summary. Keep the same important sections, "
+                "preserve key facts, and remove duplicated wording.\n\n"
+                + "\n\n---\n\n".join(
+                    f"Chunk {idx} summary:\n{chunk_summary}"
+                    for idx, chunk_summary in enumerate(chunk_summaries, start=1)
+                )
+            )
+            summary = self._summarize_prompt(template.replace("{transcript}", combined_input))
 
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        out_md.write_text(summary, encoding="utf-8")
+        log.info("Summary written: %d chars → %s", len(summary), out_md)
+
+        if self._beh.auto_open_summary:
+            _open_file(out_md)
+
+    def _summarize_prompt(self, prompt: str) -> str:
         log.info("POSTing to Ollama %s/api/generate (model=%s)", self._ollama.host, self._ollama.model)
         try:
             response = requests.post(
@@ -102,7 +137,6 @@ class Summarizer:
                 )
             ) from exc
 
-        # Accumulate streamed response
         text_parts: list[str] = []
         for line in response.iter_lines():
             if not line:
@@ -116,13 +150,46 @@ class Summarizer:
             except json.JSONDecodeError:
                 continue
 
-        summary = "".join(text_parts).strip()
-        out_md.parent.mkdir(parents=True, exist_ok=True)
-        out_md.write_text(summary, encoding="utf-8")
-        log.info("Summary written: %d chars → %s", len(summary), out_md)
+        return "".join(text_parts).strip()
 
-        if self._beh.auto_open_summary:
-            _open_file(out_md)
+
+def _chunk_transcript(transcript: str) -> list[str]:
+    if len(transcript) <= _CHUNK_TRIGGER_CHARS:
+        return [transcript]
+
+    chunks: list[str] = []
+    start = 0
+    total = len(transcript)
+    while start < total:
+        window_end = min(start + _CHUNK_TARGET_CHARS, total)
+        end = window_end
+        if window_end < total:
+            boundary = _find_chunk_boundary(transcript, start, window_end)
+            if boundary > start + (_CHUNK_TARGET_CHARS // 2):
+                end = boundary
+        if end <= start:
+            end = min(start + _CHUNK_TARGET_CHARS, total)
+        chunk = transcript[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= total:
+            break
+        next_start = max(end - _CHUNK_OVERLAP_CHARS, start + 1)
+        if next_start <= start:
+            next_start = end
+        start = next_start
+    return chunks
+
+
+def _find_chunk_boundary(text: str, start: int, end: int) -> int:
+    window = text[start:end]
+    for separator in ("\n\n", "\n", ". ", "! ", "? "):
+        idx = window.rfind(separator)
+        if idx > 0:
+            return start + idx + len(separator)
+    idx = window.rfind(" ")
+    if idx > 0:
+        return start + idx + 1
 
 
 def _open_file(path: Path) -> None:
