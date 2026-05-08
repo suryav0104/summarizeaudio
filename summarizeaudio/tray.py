@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import re
 import signal
 import subprocess
 import sys
 import threading
 import traceback
-from datetime import date
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import pystray
@@ -16,7 +18,6 @@ from PIL import Image
 
 from summarizeaudio.config import load_config, save_config
 from summarizeaudio.error_handler import format_error
-from summarizeaudio.namer import Namer, default_name
 from summarizeaudio.notifier import notify
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.recorder import Recorder
@@ -25,6 +26,19 @@ from summarizeaudio.ui_dispatcher import UIDispatcher
 ASSETS = Path(__file__).parent.parent / "assets"
 LOCK_FILE = Path.home() / ".summarizeaudio" / "app.lock"
 EMOJI_ICONS = {"idle": "🎙", "recording": "🔴", "processing": "💭", "error": "⚠️"}
+log = logging.getLogger(__name__)
+_SESSION_SUMMARY_RE = re.compile(
+    r"^Summary - (?P<name>.+?)_(?P<date>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_\d+)?)$"
+)
+
+
+@dataclass(frozen=True)
+class SessionFiles:
+    label: str
+    folder: Path
+    summary: Path
+    transcript: Path | None
+    audio: Path | None
 
 
 def _osascript(script: str) -> tuple[int, str]:
@@ -56,7 +70,6 @@ class TrayApp:
         self._pipeline_running = threading.Event()
         self._stop_event = threading.Event()
         self._recorder: Recorder | None = None
-        self._namer: Namer | None = None
         self._cfg = load_config(self._ui_queue)
         self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
 
@@ -79,8 +92,8 @@ class TrayApp:
         self._dispatcher.register("error", self._on_error)
         self._dispatcher.register("fatal_error", self._on_fatal_error)
         self._dispatcher.register("info_dialog", self._on_info_dialog)
-        self._dispatcher.register("name_dialog", self._on_name_dialog)
         self._dispatcher.register("override_dialog", self._on_override_dialog)
+        self._dispatcher.register("name_dialog", self._on_name_dialog)
         self._dispatcher.register("local_audio_flow", self._run_local_audio_flow)
         self._dispatcher.register("local_text_flow", self._run_local_text_flow)
         self._dispatcher.register("summary_ready", self._on_summary_ready)
@@ -90,8 +103,6 @@ class TrayApp:
     def _on_start_recording(self, icon, item) -> None:
         if self._pipeline_running.is_set():
             return
-        today = date.today().strftime("%m-%d-%y")
-        namer = Namer(self._ui_queue, default=f"Recording_{today}")
         recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
         try:
             recorder.start()
@@ -99,7 +110,6 @@ class TrayApp:
             recorder.cleanup(delete_wav=True)
             self._on_error("tray.py → recorder", str(exc), traceback.format_exc())
             return
-        self._namer = namer
         self._recorder = recorder
         self._set_icon("recording")
         self._rebuild_menu()
@@ -113,45 +123,21 @@ class TrayApp:
         except Exception as exc:
             recorder.cleanup(delete_wav=False)
             self._recorder = None
-            self._namer = None
             self._on_error("tray.py → recorder", str(exc), traceback.format_exc())
             self._set_icon("idle")
             self._rebuild_menu()
             return
 
-        name = self._namer.wait(timeout=30) if self._namer else f"Recording_{date.today().strftime('%m-%d-%y')}"
         self._recorder = None
-        self._namer = None
-        if name is None:
-            mp3_path.unlink(missing_ok=True)
-            self._set_icon("idle")
-            self._rebuild_menu()
-            return
-        self._pipeline_running.set()
-        self._set_icon("processing")
+        self._set_icon("idle")
         self._rebuild_menu()
-
-        def run():
-            # pipeline clears pipeline_running via done_event in its own finally block
-            self._pipeline.run(
-                mode=PipelineMode.RECORD,
-                session_name=name,
-                mp3_path=mp3_path,
-                done_event=self._pipeline_running,
-            )
-            self._ui_queue.put_nowait(("set_icon", "idle"))
-
-        threading.Thread(target=run, daemon=True).start()
+        self._launch_workflow("record", source=mp3_path)
 
     def _on_local_audio(self, icon, item) -> None:
-        if self._pipeline_running.is_set():
-            return
-        self._ui_queue.put_nowait(("local_audio_flow",))
+        self._launch_workflow("audio")
 
     def _on_local_text(self, icon, item) -> None:
-        if self._pipeline_running.is_set():
-            return
-        self._ui_queue.put_nowait(("local_text_flow",))
+        self._launch_workflow("text")
 
     def _on_quality_fast(self, icon, item) -> None:
         self._set_model("gemma3:4b", "Fast (4B)")
@@ -229,44 +215,6 @@ class TrayApp:
             messagebox.showinfo(title, message)
             root.destroy()
 
-    def _on_name_dialog(self, namer: Namer) -> None:
-        if sys.platform == "darwin":
-            default_val = _as_safe(namer._default)
-            rc, out = _osascript(
-                f'display dialog "Enter a name for this recording:" '
-                f'default answer "{default_val}" with title "Session Name"'
-            )
-            if rc == 0:
-                text = out.split("text returned:")[-1].strip()
-                if text:
-                    namer._resolve(text)
-                else:
-                    namer._resolve(None)
-                    self._cancel_recording_if_naming(namer)
-            else:
-                namer._resolve(None)
-                self._cancel_recording_if_naming(namer)
-        else:
-            import tkinter as tk
-            from tkinter import simpledialog
-            root = tk.Tk(); root.withdraw()
-            result = simpledialog.askstring(
-                "Session Name", "Enter a name for this recording:", parent=root,
-            )
-            root.destroy()
-            namer._resolve(result)
-            if result is None:
-                self._cancel_recording_if_naming(namer)
-
-    def _cancel_recording_if_naming(self, namer: Namer) -> None:
-        if self._namer is not namer or self._recorder is None:
-            return
-        self._recorder.cleanup(delete_wav=True)
-        self._recorder = None
-        self._namer = None
-        self._set_icon("idle")
-        self._rebuild_menu()
-
     def _on_override_dialog(self, override, prompt: str) -> None:
         def launch() -> None:
             cmd = [sys.executable, "-m", "summarizeaudio.prompt_editor", "--title", "SummarizeAudio"]
@@ -297,6 +245,53 @@ class TrayApp:
 
         threading.Thread(target=launch, daemon=True).start()
 
+    def _on_name_dialog(self, name_event, default_name: str) -> None:
+        def launch() -> None:
+            cmd = [
+                sys.executable,
+                "-m",
+                "summarizeaudio.prompt_editor",
+                "--title",
+                "Recording Name",
+                "--mode",
+                "name",
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=default_name,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception as exc:
+                log.exception("Name editor helper failed to launch")
+                name_event._resolve(None)
+                self._ui_queue.put_nowait(
+                    (
+                        "info_dialog",
+                        "Name editor could not open.",
+                        f"SummarizeAudio could not show the name editor.\n\n{exc}",
+                    )
+                )
+                return
+
+            if proc.returncode == 0:
+                name_event._resolve(proc.stdout or default_name)
+            else:
+                name_event._resolve(None)
+
+        threading.Thread(target=launch, daemon=True).start()
+
+    def _launch_workflow(self, mode: str, source: Path | None = None) -> None:
+        cmd = [sys.executable, "-m", "summarizeaudio.workflow_window", "--mode", mode]
+        if source is not None:
+            cmd.extend(["--source", str(source)])
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            self._on_error("tray.py → workflow", str(exc), traceback.format_exc())
+
     def _on_summary_ready(self, path: Path) -> None:
         if sys.platform == "darwin":
             safe_name = _as_safe(path.name)
@@ -322,110 +317,104 @@ class TrayApp:
         save_config(self._cfg)
         self._rebuild_menu()
 
+    def _pick_file(self, kind: str) -> Path | None:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "summarizeaudio.chooser_window",
+                "--kind",
+                kind,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 1:
+            return None
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or "The file picker could not open.")
+        path = proc.stdout.strip()
+        return Path(path) if path else None
+
+    def _open_path(self, path: Path) -> None:
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif hasattr(os, "startfile"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as exc:
+            self._on_error("tray.py → open", str(exc), traceback.format_exc())
+
+    def _recent_sessions(self, limit: int = 5) -> list[SessionFiles]:
+        root = self._cfg.storage.output_folder
+        summary_dir = root / "SummaryFiles"
+        if not summary_dir.exists():
+            return []
+
+        candidates = sorted(
+            summary_dir.glob("Summary - *.md"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        sessions: list[SessionFiles] = []
+        for summary in candidates:
+            match = _SESSION_SUMMARY_RE.match(summary.stem)
+            if not match:
+                continue
+            name = match.group("name")
+            date = match.group("date")
+            suffix = match.group("suffix")
+            transcript = root / "TranscriptionFiles" / f"Transcript_{name}_{date}{suffix}.txt"
+            audio = root / "AudioFiles" / f"Audio_{name}_{date}{suffix}.mp3"
+            sessions.append(
+                SessionFiles(
+                    label=f"{name} ({date})",
+                    folder=summary.parent,
+                    summary=summary,
+                    transcript=transcript if transcript.exists() else None,
+                    audio=audio if audio.exists() else None,
+                )
+            )
+            if len(sessions) >= limit:
+                break
+        return sessions
+
+    def _session_action_specs(self, session: SessionFiles) -> list[tuple[str, Path]]:
+        specs = [("Open Summary", session.summary)]
+        if session.transcript is not None:
+            specs.append(("Open Transcript", session.transcript))
+        if session.audio is not None:
+            specs.append(("Open Recording", session.audio))
+        specs.append(("Open Folder", session.folder))
+        return specs
+
+    def _session_actions_pystray(self, session: SessionFiles) -> pystray.Menu:
+        def opener(path: Path):
+            def _callback(_icon, _item) -> None:
+                self._open_path(path)
+
+            return _callback
+
+        items = [pystray.MenuItem(label, opener(path)) for label, path in self._session_action_specs(session)]
+        return pystray.Menu(*items)
+
+    def _session_actions_rumps(self, session: SessionFiles):
+        import rumps
+
+        menu_item = rumps.MenuItem(session.label)
+        for label, path in self._session_action_specs(session):
+            menu_item.add(rumps.MenuItem(label, callback=lambda _item, p=path: self._open_path(p)))
+        return menu_item
+
     def _run_local_audio_flow(self) -> None:
-        if sys.platform == "darwin":
-            rc, path_str = _osascript(
-                'set f to choose file with prompt "Select Audio File" '
-                'of type {"mp3", "wav", "m4a", "ogg", "flac", "public.audio"}\n'
-                'return POSIX path of f'
-            )
-            if rc != 0 or not path_str:
-                return
-            source = Path(path_str)
-            today = date.today().strftime("%m-%d-%y")
-            default_val = _as_safe(f"{source.stem}_{today}")
-            rc2, out = _osascript(
-                f'display dialog "Enter a name for this session:" '
-                f'default answer "{default_val}" with title "Session Name"'
-            )
-            name = (out.split("text returned:")[-1].strip()
-                    if rc2 == 0 else f"{source.stem}_{today}") or f"{source.stem}_{today}"
-        else:
-            import tkinter as tk
-            from tkinter import filedialog, simpledialog
-            root = tk.Tk(); root.withdraw()
-            path_str = filedialog.askopenfilename(
-                title="Select Audio File",
-                filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.ogg *.flac")],
-            )
-            root.destroy()
-            if not path_str:
-                return
-            source = Path(path_str)
-            today = date.today().strftime("%m-%d-%y")
-            root2 = tk.Tk(); root2.withdraw()
-            name = simpledialog.askstring(
-                "Session Name", "Enter a name for this session:",
-                initialvalue=f"{source.stem}_{today}", parent=root2,
-            ) or f"{source.stem}_{today}"
-            root2.destroy()
-        # Set pipeline_running AFTER both dialogs complete with a valid path
-        self._pipeline_running.set()
-        self._set_icon("processing")
-        self._rebuild_menu()
-
-        def run():
-            self._pipeline.run(
-                mode=PipelineMode.LOCAL_AUDIO,
-                session_name=name,
-                source_path=source,
-                done_event=self._pipeline_running,
-            )
-            self._ui_queue.put_nowait(("set_icon", "idle"))
-
-        threading.Thread(target=run, daemon=True).start()
+        self._launch_workflow("audio")
 
     def _run_local_text_flow(self) -> None:
-        if sys.platform == "darwin":
-            rc, path_str = _osascript(
-                'set f to choose file with prompt "Select Text File"\n'
-                'return POSIX path of f'
-            )
-            if rc != 0 or not path_str:
-                return
-            source = Path(path_str)
-            today = date.today().strftime("%m-%d-%y")
-            default_val = _as_safe(f"{source.stem}_{today}")
-            rc2, out = _osascript(
-                f'display dialog "Enter a name for this session:" '
-                f'default answer "{default_val}" with title "Session Name"'
-            )
-            name = (out.split("text returned:")[-1].strip()
-                    if rc2 == 0 else f"{source.stem}_{today}") or f"{source.stem}_{today}"
-        else:
-            import tkinter as tk
-            from tkinter import filedialog, simpledialog
-            root = tk.Tk(); root.withdraw()
-            path_str = filedialog.askopenfilename(
-                title="Select Text File",
-                filetypes=[("Text files", "*.txt *.md")],
-            )
-            root.destroy()
-            if not path_str:
-                return
-            source = Path(path_str)
-            today = date.today().strftime("%m-%d-%y")
-            root2 = tk.Tk(); root2.withdraw()
-            name = simpledialog.askstring(
-                "Session Name", "Enter a name for this session:",
-                initialvalue=f"{source.stem}_{today}", parent=root2,
-            ) or f"{source.stem}_{today}"
-            root2.destroy()
-        # Set pipeline_running AFTER both dialogs complete with a valid path
-        self._pipeline_running.set()
-        self._set_icon("processing")
-        self._rebuild_menu()
-
-        def run():
-            self._pipeline.run(
-                mode=PipelineMode.LOCAL_TEXT,
-                session_name=name,
-                source_path=source,
-                done_event=self._pipeline_running,
-            )
-            self._ui_queue.put_nowait(("set_icon", "idle"))
-
-        threading.Thread(target=run, daemon=True).start()
+        self._launch_workflow("text")
 
     # ── Icon and menu helpers ─────────────────────────────────────────────────
 
@@ -454,6 +443,13 @@ class TrayApp:
                 "Transcribe & Summarize Audio File…", self._on_local_audio))
             items.append(pystray.MenuItem(
                 "Summarize Text File…", self._on_local_text))
+            recent_sessions = self._recent_sessions()
+            if recent_sessions:
+                items.append(pystray.Menu.SEPARATOR)
+                items.append(pystray.MenuItem(
+                    "History",
+                    pystray.Menu(*[pystray.MenuItem(session.label, self._session_actions_pystray(session)) for session in recent_sessions]),
+                ))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Summarization Model", None, enabled=False))
             fast_label = self._model_label("gemma3:4b", "Fast Mode (gemma3:4b)")
@@ -485,6 +481,13 @@ class TrayApp:
                 "Summarize Text File…",
                 callback=lambda _: self._on_local_text(None, None),
             ))
+            recent_sessions = self._recent_sessions()
+            if recent_sessions:
+                items.append(None)
+                recent_root = rumps.MenuItem("History")
+                for session in recent_sessions:
+                    recent_root.add(self._session_actions_rumps(session))
+                items.append(recent_root)
             items.append(None)
             items.append(rumps.MenuItem("Summarization Model"))
             fast_item = rumps.MenuItem(
