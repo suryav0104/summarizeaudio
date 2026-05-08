@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from summarizeaudio import sessions as session_store
 from summarizeaudio import workflow_window
 from summarizeaudio.config import (
     AppConfig,
@@ -644,6 +645,149 @@ def test_workflow_window_summary_ready_opens_summary_and_stays_open(tmp_path, mo
     assert opened == []
     assert raised
     assert fake_root.destroyed is False
+
+
+def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+
+    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
+    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript_Topic.txt"
+    audio_path = tmp_path / "AudioFiles" / "Audio_Topic.mp3"
+    summary_path.parent.mkdir(parents=True)
+    transcript_path.parent.mkdir(parents=True)
+    audio_path.parent.mkdir(parents=True)
+    summary_path.write_text("summary content", encoding="utf-8")
+    transcript_path.write_text("transcript content", encoding="utf-8")
+    audio_path.write_text("audio content", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.session_by_id",
+        lambda session_id: session_store.SessionFiles(
+            label="Topic",
+            date="05-08-26",
+            folder=summary_path.parent,
+            summary=summary_path,
+            transcript=None,
+            audio=None,
+            source_path=None,
+            id=session_id,
+            created_at="2026-05-08T00:00:00+00:00",
+            completed_at="",
+            status="partial",
+            archived=False,
+            mode="text",
+            source_key="resume-1",
+        ),
+    )
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.session_for_summary_path",
+        lambda root, path: session_store.SessionFiles(
+            label="Topic",
+            date="05-08-26",
+            folder=summary_path.parent,
+            summary=summary_path,
+            transcript=transcript_path,
+            audio=audio_path,
+            source_path=audio_path,
+            id="resume-1",
+            created_at="2026-05-08T00:00:00+00:00",
+            completed_at="",
+            status="partial",
+            archived=False,
+            mode="text",
+            source_key="resume-1",
+        ),
+    )
+
+    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt", resume_session_id="resume-1")
+    window._summary_path = summary_path
+    window._summary_preview = "summary content"
+    window._state = "summary"
+    window._step_state = "message"
+    FakeButton.instances.clear()
+    FakeLabel.instances.clear()
+
+    body = FakeFrame()
+    window._render_summary(body)
+
+    button_texts = [btn.kwargs["text"] for btn in FakeButton.instances]
+    assert "Open Transcript" in button_texts
+    assert "Open Recording" in button_texts
+    assert "Close" in button_texts
+    assert any("summary content" in text.content for text in FakeText.instances)
+
+
+def test_workflow_window_summary_action_specs_include_available_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+
+    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
+    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript_Topic.txt"
+    audio_path = tmp_path / "AudioFiles" / "Audio_Topic.mp3"
+    summary_path.parent.mkdir(parents=True)
+    transcript_path.parent.mkdir(parents=True)
+    audio_path.parent.mkdir(parents=True)
+    summary_path.write_text("summary content", encoding="utf-8")
+    transcript_path.write_text("transcript content", encoding="utf-8")
+    audio_path.write_text("audio content", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.session_by_id",
+        lambda session_id: session_store.SessionFiles(
+            label="Topic",
+            date="05-08-26",
+            folder=summary_path.parent,
+            summary=summary_path,
+            transcript=None,
+            audio=None,
+            source_path=None,
+            id=session_id,
+            created_at="2026-05-08T00:00:00+00:00",
+            completed_at="",
+            status="partial",
+            archived=False,
+            mode="text",
+            source_key="resume-1",
+        ),
+    )
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.session_for_summary_path",
+        lambda root, path: session_store.SessionFiles(
+            label="Topic",
+            date="05-08-26",
+            folder=summary_path.parent,
+            summary=summary_path,
+            transcript=transcript_path,
+            audio=audio_path,
+            source_path=audio_path,
+            id="resume-1",
+            created_at="2026-05-08T00:00:00+00:00",
+            completed_at="",
+            status="partial",
+            archived=False,
+            mode="text",
+            source_key="resume-1",
+        ),
+    )
+
+    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt", resume_session_id="resume-1")
+    window._summary_path = summary_path
+    session = window._summary_session()
+    assert session is not None
+    assert window._summary_action_specs(session) == [("Open Transcript", transcript_path), ("Open Recording", audio_path)]
 
 
 def test_workflow_window_defaults_to_larger_geometry(tmp_path, monkeypatch):

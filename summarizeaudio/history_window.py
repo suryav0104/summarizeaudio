@@ -4,7 +4,9 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from typing import Callable
 
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -183,7 +185,7 @@ class HistoryWindow:
         header_row.pack(fill="x")
         title = "Archived History" if self._show_archived else "History"
         ttk.Label(header_row, text=title, style="Title.TLabel").pack(side="left", anchor="w")
-        toggle_label = "Archive" if not self._show_archived else "Active"
+        toggle_label = "Archived Sessions" if not self._show_archived else "Active Sessions"
         self._button(header_row, text=toggle_label, command=self._toggle_archived_filter, primary=False).pack(side="right")
         body = self._clear_body()
         if not self._sessions:
@@ -217,7 +219,13 @@ class HistoryWindow:
         self._session_scrollbar.pack(side="right", fill="y")
         for index, session in enumerate(self._sessions):
             tags = ("row_even",) if index % 2 == 0 else ("row_odd",)
-            self._session_list.insert("", "end", iid=str(index), values=(session.label, session.date), tags=tags)
+            self._session_list.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(self._session_display_label(session), session.date),
+                tags=tags,
+            )
         self._session_list.tag_configure("row_even", background="#ffffff")
         self._session_list.tag_configure("row_odd", background="#f8faff")
         self._session_list.bind("<<TreeviewSelect>>", self._on_select)
@@ -287,7 +295,12 @@ class HistoryWindow:
 
         details = ttk.Frame(self._detail_card, style="Card.TFrame")
         details.pack(fill="x", pady=(0, 18))
-        ttk.Label(details, text=f"Summary: {session.summary.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+        if session.summary is not None:
+            ttk.Label(details, text=f"Summary: {session.summary.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+        else:
+            ttk.Label(details, text="Summary: not yet created", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+        if getattr(session, "source_path", None) is not None:
+            ttk.Label(details, text=f"Source: {session.source_path.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
         if session.audio is not None:
             ttk.Label(details, text=f"Recording: {session.audio.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
         if session.transcript is not None:
@@ -301,7 +314,10 @@ class HistoryWindow:
                 self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=True).pack(side="left")
             else:
                 self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(8, 0))
-        if specs:
+        resume_actions = self._resume_actions(session)
+        for label, callback in resume_actions:
+            self._button(actions, text=label, command=callback, primary=False).pack(side="left", padx=(8, 0))
+        if session.summary is not None and session.summary.exists():
             archive_label = "Unarchive" if session.archived else "Archive"
             self._button(
                 actions,
@@ -315,6 +331,72 @@ class HistoryWindow:
         archive_session(session.id, archived=not session.archived)
         self._reload_sessions(selected_id=session.id)
         self._render()
+
+    def _resume_actions(self, session: "SessionFiles") -> list[tuple[str, Callable[[], None]]]:
+        status = getattr(session, "status", "completed")
+        if status not in {"partial", "failed", "in_progress"}:
+            return []
+        if session.summary is None or not session.summary.exists():
+            if session.transcript is not None and session.transcript.exists():
+                return [("Retry Summarization", lambda s=session: self._resume_text_session(s))]
+            if session.audio is not None and session.audio.exists():
+                return [("Retry Transcription", lambda s=session: self._resume_audio_session(s))]
+            source_path = getattr(session, "source_path", None)
+            if source_path is not None and source_path.exists():
+                return [("Retry Transcription", lambda s=session: self._resume_audio_session(s))]
+        return []
+
+    def _resume_audio_session(self, session: "SessionFiles") -> None:
+        source = session.audio if session.audio is not None and session.audio.exists() else getattr(session, "source_path", None)
+        if source is None:
+            return
+        self._launch_workflow("audio", source, resume_session_id=session.id)
+        self._root.withdraw()
+
+    def _resume_text_session(self, session: "SessionFiles") -> None:
+        if session.transcript is None or not session.transcript.exists():
+            return
+        self._launch_workflow("text", session.transcript, resume_session_id=session.id)
+        self._root.withdraw()
+
+    def _launch_workflow(self, mode: str, source: Path | None, resume_session_id: str | None = None) -> None:
+        cmd = [sys.executable, "-m", "summarizeaudio.workflow_window", "--mode", mode]
+        if source is not None:
+            cmd.extend(["--source", str(source)])
+        if resume_session_id is not None:
+            cmd.extend(["--resume-session-id", resume_session_id])
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            return
+
+        def wait_and_refresh() -> None:
+            try:
+                proc.wait()
+            finally:
+                try:
+                    self._root.after(0, self._refresh_after_workflow)
+                except Exception:
+                    pass
+
+        threading.Thread(target=wait_and_refresh, daemon=True).start()
+
+    def _refresh_after_workflow(self) -> None:
+        if not self._root.winfo_exists():
+            return
+        self._reload_sessions()
+        self._render()
+        try:
+            self._root.deiconify()
+            self._root.lift()
+            self._root.focus_force()
+        except Exception:
+            pass
+
+    def _session_display_label(self, session) -> str:
+        if getattr(session, "status", "completed") in {"partial", "failed", "in_progress"}:
+            return f"* {session.label}"
+        return session.label
 
     def _open_file(self, path: Path) -> None:
         try:

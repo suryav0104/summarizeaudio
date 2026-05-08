@@ -109,6 +109,19 @@ def friendly_message(component: str, message: str, traceback_str: str = "") -> s
             "MP3, WAV, M4A, OGG, FLAC, MP4, or WEBM."
         )
 
+    if (
+        "summary validation failed" in text
+        or "missing required summary sections" in text
+        or "duplicate summary sections" in text
+        or "unexpected section heading" in text
+        or "text before the first summary section" in text
+        or "repetitive output" in text
+    ):
+        return (
+            "The model returned a summary that did not match the expected format. "
+            "Please try summarizing again."
+        )
+
     return (
         "Something went wrong while processing this request. "
         "Please try again or check the log for details."

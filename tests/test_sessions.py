@@ -5,7 +5,15 @@ import sqlite3
 from pathlib import Path
 
 from summarizeaudio import sessions as session_store
-from summarizeaudio.sessions import archive_session, discover_sessions, load_sessions, session_action_specs, session_for_summary_path
+from summarizeaudio.sessions import (
+    archive_session,
+    create_session_record,
+    discover_sessions,
+    load_sessions,
+    session_action_specs,
+    session_for_summary_path,
+    update_session_record,
+)
 
 
 def test_discover_sessions_orders_newest_first_and_filters_missing_files(tmp_path):
@@ -129,6 +137,102 @@ def test_archive_session_toggles_visibility_in_sqlite(tmp_path, monkeypatch):
     assert restored_sessions[0].archived is False
 
 
+def test_archived_and_active_views_are_disjoint(tmp_path, monkeypatch):
+    root = tmp_path / "Output"
+    summary_dir = root / "SummaryFiles"
+    summary_dir.mkdir(parents=True)
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    active_summary = summary_dir / "Summary - Active_05-08-26.md"
+    archived_summary = summary_dir / "Summary - Archived_05-07-26.md"
+    active_summary.write_text("active")
+    archived_summary.write_text("archived")
+
+    active = create_session_record(
+        root=root,
+        source_key="active-1",
+        label="Active",
+        date="05-08-26",
+        mode="text",
+        folder=root,
+        status="completed",
+        summary_path=active_summary,
+        completed_at="2026-05-08T12:00:00+00:00",
+    )
+    archived = create_session_record(
+        root=root,
+        source_key="archived-1",
+        label="Archived",
+        date="05-07-26",
+        mode="text",
+        folder=root,
+        status="completed",
+        summary_path=archived_summary,
+        completed_at="2026-05-07T12:00:00+00:00",
+        archived=True,
+    )
+
+    monkeypatch.setattr(session_store, "sync_sessions_from_filesystem", lambda root: None)
+    active_rows = load_sessions(root, include_archived=False)
+    archived_rows = load_sessions(root, include_archived=True)
+
+    assert [row.id for row in active_rows] == [active.id]
+    assert [row.id for row in archived_rows] == [archived.id]
+
+
+def test_partial_session_is_saved_before_summary_exists(tmp_path, monkeypatch):
+    root = tmp_path / "Output"
+    root.mkdir(parents=True)
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    audio = root / "AudioFiles" / "Recording.m4a"
+    audio.parent.mkdir(parents=True)
+    audio.write_text("audio")
+
+    session = create_session_record(
+        root=root,
+        source_key="workflow-123",
+        label="Recording",
+        date="05-10-26",
+        mode="record",
+        folder=root,
+        status="in_progress",
+        audio_path=audio,
+        source_path=audio,
+    )
+
+    sessions = load_sessions(root, include_archived=False)
+    assert len(sessions) == 1
+    assert sessions[0].label == "Recording"
+    assert sessions[0].summary is None
+    assert sessions[0].audio == audio
+    assert sessions[0].source_path == audio
+    assert session_action_specs(sessions[0]) == [("Open Recording", audio)]
+
+    transcript = root / "TranscriptionFiles" / "Transcript_Recording_05-10-26.txt"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("transcript")
+    summary = root / "SummaryFiles" / "Summary - Recording_05-10-26.md"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("summary")
+    update_session_record(
+        session_id=session.id,
+        source_key="Summary - Recording_05-10-26",
+        label="Recording",
+        summary_path=summary,
+        transcript_path=transcript,
+        status="completed",
+        completed_at="2026-05-10T00:00:00+00:00",
+    )
+
+    refreshed = load_sessions(root, include_archived=False)
+    assert refreshed[0].summary == summary
+    assert refreshed[0].transcript == transcript
+    assert refreshed[0].status == "completed"
+
+
 def test_initial_history_migration_archives_only_existing_tail_once(tmp_path, monkeypatch):
     root = tmp_path / "Output"
     summary_dir = root / "SummaryFiles"
@@ -172,3 +276,48 @@ def test_initial_history_migration_archives_only_existing_tail_once(tmp_path, mo
     with sqlite3.connect(db_path) as conn:
         archived_count_after = conn.execute("SELECT COUNT(*) FROM sessions WHERE archived = 1").fetchone()[0]
         assert archived_count_after == 2
+
+
+def test_partial_sessions_sort_ahead_of_completed_sessions(tmp_path, monkeypatch):
+    root = tmp_path / "Output"
+    root.mkdir(parents=True)
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    completed = create_session_record(
+        root=root,
+        source_key="completed-1",
+        label="Completed",
+        date="05-08-26",
+        mode="audio",
+        folder=root,
+        status="completed",
+        summary_path=root / "SummaryFiles" / "Summary - Completed_05-08-26.md",
+        created_at="2026-05-08T20:00:00+00:00",
+        completed_at="2026-05-08T20:01:00+00:00",
+    )
+    partial = create_session_record(
+        root=root,
+        source_key="partial-1",
+        label="Partial",
+        date="05-08-26",
+        mode="audio",
+        folder=root,
+        status="partial",
+        summary_path=None,
+        created_at="2026-05-08T21:00:00+00:00",
+    )
+    failed = create_session_record(
+        root=root,
+        source_key="failed-1",
+        label="Failed",
+        date="05-08-26",
+        mode="audio",
+        folder=root,
+        status="failed",
+        summary_path=None,
+        created_at="2026-05-08T21:05:00+00:00",
+    )
+
+    sessions = load_sessions(root, include_archived=False)
+    assert [session.id for session in sessions[:3]] == [failed.id, partial.id, completed.id]

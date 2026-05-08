@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -19,6 +20,19 @@ from summarizeaudio.error_handler import friendly_message
 _CHUNK_TRIGGER_CHARS = 8000
 _CHUNK_TARGET_CHARS = 6000
 _CHUNK_OVERLAP_CHARS = 500
+_SUMMARY_SECTION_ORDER = (
+    "**Key Points:**",
+    "**Decisions / Action Items:**",
+    "**Notable Details:**",
+)
+_SUMMARY_SECTION_ALIASES = {
+    "key points": "**Key Points:**",
+    "decision": "**Decisions / Action Items:**",
+    "decisions": "**Decisions / Action Items:**",
+    "decisions / action items": "**Decisions / Action Items:**",
+    "action items": "**Decisions / Action Items:**",
+    "notable details": "**Notable Details:**",
+}
 
 
 class OllamaError(RuntimeError):
@@ -80,7 +94,9 @@ class Summarizer:
 
         transcript_chunks = _chunk_transcript(transcript)
         if len(transcript_chunks) <= 1:
-            summary = self._summarize_prompt(template.replace("{transcript}", transcript))
+            summary = self._validate_summary(
+                self._summarize_prompt(template.replace("{transcript}", transcript))
+            )
         else:
             log.info(
                 "Transcript exceeds chunk threshold (%d chars) — summarizing in %d chunks",
@@ -90,7 +106,9 @@ class Summarizer:
             chunk_summaries: list[str] = []
             for idx, chunk_text in enumerate(transcript_chunks, start=1):
                 log.info("Summarizing chunk %d/%d (%d chars)", idx, len(transcript_chunks), len(chunk_text))
-                chunk_summary = self._summarize_prompt(template.replace("{transcript}", chunk_text))
+                chunk_summary = self._validate_summary(
+                    self._summarize_prompt(template.replace("{transcript}", chunk_text))
+                )
                 chunk_summaries.append(chunk_summary)
             combined_input = (
                 "These are summaries of chunks from one longer transcript. "
@@ -101,7 +119,9 @@ class Summarizer:
                     for idx, chunk_summary in enumerate(chunk_summaries, start=1)
                 )
             )
-            summary = self._summarize_prompt(template.replace("{transcript}", combined_input))
+            summary = self._validate_summary(
+                self._summarize_prompt(template.replace("{transcript}", combined_input))
+            )
 
         out_md.parent.mkdir(parents=True, exist_ok=True)
         out_md.write_text(summary, encoding="utf-8")
@@ -109,6 +129,19 @@ class Summarizer:
 
         if self._beh.auto_open_summary:
             _open_file(out_md)
+
+    def _validate_summary(self, summary: str) -> str:
+        normalized = _normalize_summary_text(summary)
+        missing = [heading for heading in _SUMMARY_SECTION_ORDER if heading.lower() not in normalized.lower()]
+        if missing:
+            raise OllamaError(
+                friendly_message(
+                    "summarizer.py → output validation",
+                    "Summary validation failed: missing required summary sections.",
+                    "",
+                )
+            )
+        return normalized
 
     def _summarize_prompt(self, prompt: str) -> str:
         log.info("POSTing to Ollama %s/api/generate (model=%s)", self._ollama.host, self._ollama.model)
@@ -151,6 +184,127 @@ class Summarizer:
                 continue
 
         return "".join(text_parts).strip()
+
+
+def _normalize_summary_text(summary: str) -> str:
+    lines: list[str] = []
+    current_section: str | None = None
+    seen_sections: set[str] = set()
+    last_content_line: str | None = None
+
+    for raw_line in summary.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+
+        heading = _canonical_summary_heading(line)
+        if heading is not None:
+            if heading in seen_sections:
+                raise OllamaError(
+                    friendly_message(
+                        "summarizer.py → output validation",
+                        "Summary validation failed: duplicate summary sections were returned.",
+                        "",
+                    )
+                )
+            seen_sections.add(heading)
+            current_section = heading
+            lines.append(heading)
+            last_content_line = None
+            continue
+
+        if current_section is None:
+            raise OllamaError(
+                friendly_message(
+                    "summarizer.py → output validation",
+                    "Summary validation failed: the model returned text before the first summary section.",
+                    "",
+                )
+            )
+
+        if _looks_like_heading(line):
+            raise OllamaError(
+                friendly_message(
+                    "summarizer.py → output validation",
+                    "Summary validation failed: the model returned an unexpected section heading.",
+                    "",
+                )
+            )
+
+        if line != last_content_line:
+            lines.append(line)
+            last_content_line = line
+
+    if not lines:
+        raise OllamaError(
+            friendly_message(
+                "summarizer.py → output validation",
+                "Summary validation failed: the model returned an empty summary.",
+                "",
+            )
+        )
+
+    normalized_sections = "\n".join(lines).strip()
+    for heading in _SUMMARY_SECTION_ORDER:
+        if heading.lower() not in normalized_sections.lower():
+            raise OllamaError(
+                friendly_message(
+                    "summarizer.py → output validation",
+                    "Summary validation failed: missing required summary sections.",
+                    "",
+                )
+            )
+    if _looks_repetitive(normalized_sections):
+        raise OllamaError(
+            friendly_message(
+                "summarizer.py → output validation",
+                "Summary validation failed: the model returned repetitive output.",
+                "",
+            )
+        )
+    return normalized_sections
+
+
+def _canonical_summary_heading(line: str) -> str | None:
+    normalized = line.strip()
+    if normalized.startswith("**") and normalized.endswith("**"):
+        normalized = normalized[2:-2].strip()
+    normalized = re.sub(r"^[#*\-\s]+", "", normalized).strip().lower().rstrip(".:")
+    normalized = re.sub(r"\s+", " ", normalized)
+    return _SUMMARY_SECTION_ALIASES.get(normalized)
+
+
+def _looks_like_heading(line: str) -> bool:
+    stripped = line.strip()
+    if stripped.startswith("#"):
+        return True
+    if stripped.startswith("**") and stripped.endswith("**"):
+        return True
+    if stripped.startswith(("- ", "* ", "• ")):
+        return False
+    return stripped.endswith(":") and len(stripped.split()) <= 8
+
+
+def _looks_repetitive(summary: str) -> bool:
+    content_lines = [line.strip() for line in summary.splitlines() if line.strip()]
+    if len(content_lines) < 4:
+        return False
+    unique_lines = set(content_lines)
+    if len(unique_lines) <= max(2, len(content_lines) // 3):
+        return True
+    repeat_run = 1
+    previous = None
+    for line in content_lines:
+        if line == previous:
+            repeat_run += 1
+            if repeat_run >= 3:
+                return True
+        else:
+            previous = line
+            repeat_run = 1
+    return False
 
 
 def _chunk_transcript(transcript: str) -> list[str]:

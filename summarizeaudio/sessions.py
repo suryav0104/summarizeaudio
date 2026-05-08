@@ -22,9 +22,10 @@ class SessionFiles:
     label: str
     date: str
     folder: Path
-    summary: Path
+    summary: Path | None
     transcript: Path | None
     audio: Path | None
+    source_path: Path | None = None
     id: str = ""
     created_at: str = ""
     completed_at: str = ""
@@ -59,9 +60,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             label TEXT NOT NULL,
             date TEXT NOT NULL,
             folder TEXT NOT NULL,
-            summary_path TEXT NOT NULL,
+            summary_path TEXT,
             transcript_path TEXT,
             audio_path TEXT,
+            source_path TEXT,
             status TEXT NOT NULL DEFAULT 'completed',
             archived INTEGER NOT NULL DEFAULT 0
         )
@@ -85,9 +87,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "label": "TEXT NOT NULL DEFAULT ''",
         "date": "TEXT NOT NULL DEFAULT ''",
         "folder": "TEXT NOT NULL DEFAULT ''",
-        "summary_path": "TEXT NOT NULL DEFAULT ''",
+        "summary_path": "TEXT",
         "transcript_path": "TEXT",
         "audio_path": "TEXT",
+        "source_path": "TEXT",
         "status": "TEXT NOT NULL DEFAULT 'completed'",
         "archived": "INTEGER NOT NULL DEFAULT 0",
     }
@@ -102,6 +105,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _iso_from_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+
+def _db_path(path: Path | None) -> str:
+    return str(path) if path is not None else ""
 
 
 def _session_id_for_key(source_key: str) -> str:
@@ -149,20 +156,25 @@ def _maybe_archive_initial_sessions(conn: sqlite3.Connection, root: Path, keep: 
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionFiles:
-    summary = Path(row["summary_path"])
+    summary = Path(row["summary_path"]) if row["summary_path"] else None
     transcript = Path(row["transcript_path"]) if row["transcript_path"] else None
     audio = Path(row["audio_path"]) if row["audio_path"] else None
+    source_path = Path(row["source_path"]) if row["source_path"] else None
+    status = row["status"] or "completed"
+    if status == "in_progress":
+        status = "partial"
     return SessionFiles(
         label=row["label"],
         date=row["date"],
         folder=Path(row["folder"]),
-        summary=summary,
+        summary=summary if summary is not None and summary.exists() else summary,
         transcript=transcript if transcript is not None and transcript.exists() else None,
         audio=audio if audio is not None and audio.exists() else None,
+        source_path=source_path if source_path is not None and source_path.exists() else source_path,
         id=row["id"],
         created_at=row["created_at"],
         completed_at=row["completed_at"] or "",
-        status=row["status"],
+        status=status,
         archived=bool(row["archived"]),
         mode=row["mode"],
         source_key=row["source_key"],
@@ -223,8 +235,8 @@ def sync_sessions_from_filesystem(root: Path) -> None:
                     """
                     INSERT INTO sessions (
                         id, source_key, created_at, completed_at, mode, label, date, folder,
-                        summary_path, transcript_path, audio_path, status, archived
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        summary_path, transcript_path, audio_path, source_path, status, archived
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session.id,
@@ -235,9 +247,10 @@ def sync_sessions_from_filesystem(root: Path) -> None:
                         session.label,
                         session.date,
                         str(session.folder),
-                        str(session.summary),
-                        str(session.transcript) if session.transcript is not None else None,
-                        str(session.audio) if session.audio is not None else None,
+                        _db_path(session.summary),
+                        _db_path(session.transcript),
+                        _db_path(session.audio),
+                        _db_path(session.source_path),
                         session.status,
                         int(session.archived),
                     ),
@@ -256,6 +269,7 @@ def sync_sessions_from_filesystem(root: Path) -> None:
                     summary_path = ?,
                     transcript_path = ?,
                     audio_path = ?,
+                    source_path = ?,
                     status = ?,
                     archived = archived
                 WHERE source_key = ?
@@ -266,9 +280,10 @@ def sync_sessions_from_filesystem(root: Path) -> None:
                     session.label,
                     session.date,
                     str(session.folder),
-                    str(session.summary),
-                    str(session.transcript) if session.transcript is not None else None,
-                    str(session.audio) if session.audio is not None else None,
+                    _db_path(session.summary),
+                    _db_path(session.transcript),
+                    _db_path(session.audio),
+                    _db_path(session.source_path),
                     existing["status"] or session.status,
                     session.source_key,
                 ),
@@ -287,9 +302,17 @@ def load_sessions(
         _ensure_schema(conn)
         query = "SELECT * FROM sessions"
         params: list[object] = []
-        if not include_archived:
+        if include_archived:
+            query += " WHERE archived = 1"
+        else:
             query += " WHERE archived = 0"
-        query += " ORDER BY completed_at DESC, created_at DESC, label ASC"
+        query += (
+            " ORDER BY "
+            "CASE WHEN status IN ('partial', 'failed', 'in_progress') THEN 0 ELSE 1 END, "
+            "COALESCE(completed_at, created_at) DESC, "
+            "created_at DESC, "
+            "label ASC"
+        )
         rows = conn.execute(query, params).fetchall()
         root_resolved = root.resolve()
         filtered = [
@@ -307,10 +330,12 @@ def discover_sessions(root: Path, limit: int | None = None) -> list[SessionFiles
 
 
 def session_action_specs(session: SessionFiles) -> list[tuple[str, Path]]:
-    specs = [("Open Summary", session.summary)]
-    if session.transcript is not None:
+    specs: list[tuple[str, Path]] = []
+    if session.summary is not None and session.summary.exists():
+        specs.append(("Open Summary", session.summary))
+    if session.transcript is not None and session.transcript.exists():
         specs.append(("Open Transcript", session.transcript))
-    if session.audio is not None:
+    if session.audio is not None and session.audio.exists():
         specs.append(("Open Recording", session.audio))
     return specs
 
@@ -345,6 +370,163 @@ def session_for_summary_path(root: Path, summary: Path) -> SessionFiles | None:
         mode="audio" if audio.exists() else "text",
         source_key=_session_key_for_summary(summary),
     )
+
+
+def session_by_id(session_id: str) -> SessionFiles | None:
+    with _connect() as conn:
+        _ensure_schema(conn)
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    return _row_to_session(row)
+
+
+def session_source_key_exists(source_key: str) -> bool:
+    with _connect() as conn:
+        _ensure_schema(conn)
+        row = conn.execute("SELECT 1 FROM sessions WHERE source_key = ? LIMIT 1", (source_key,)).fetchone()
+    return row is not None
+
+
+def create_session_record(
+    *,
+    root: Path,
+    source_key: str,
+    label: str,
+    date: str,
+    mode: str,
+    folder: Path,
+    status: str = "in_progress",
+    summary_path: Path | None = None,
+    transcript_path: Path | None = None,
+    audio_path: Path | None = None,
+    source_path: Path | None = None,
+    created_at: str | None = None,
+    completed_at: str | None = None,
+    archived: bool = False,
+) -> SessionFiles:
+    now = created_at or datetime.now(tz=timezone.utc).isoformat()
+    session = SessionFiles(
+        label=label,
+        date=date,
+        folder=folder,
+        summary=summary_path,
+        transcript=transcript_path,
+        audio=audio_path,
+        source_path=source_path,
+        id=_session_id_for_key(source_key),
+        created_at=now,
+        completed_at=completed_at or "",
+        status=status,
+        archived=archived,
+        mode=mode,
+        source_key=source_key,
+    )
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                id, source_key, created_at, completed_at, mode, label, date, folder,
+                summary_path, transcript_path, audio_path, source_path, status, archived
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                created_at = excluded.created_at,
+                completed_at = excluded.completed_at,
+                mode = excluded.mode,
+                label = excluded.label,
+                date = excluded.date,
+                folder = excluded.folder,
+                summary_path = excluded.summary_path,
+                transcript_path = excluded.transcript_path,
+                audio_path = excluded.audio_path,
+                source_path = excluded.source_path,
+                status = excluded.status,
+                archived = excluded.archived
+            """,
+            (
+                session.id,
+                session.source_key,
+                session.created_at,
+                session.completed_at,
+                session.mode,
+                session.label,
+                session.date,
+                str(session.folder),
+                _db_path(session.summary),
+                _db_path(session.transcript),
+                _db_path(session.audio),
+                _db_path(session.source_path),
+                session.status,
+                int(session.archived),
+            ),
+        )
+        conn.commit()
+    return session
+
+
+def update_session_record(
+    *,
+    session_id: str,
+    source_key: str | None = None,
+    label: str | None = None,
+    date: str | None = None,
+    folder: Path | None = None,
+    summary_path: Path | None | object = ...,
+    transcript_path: Path | None | object = ...,
+    audio_path: Path | None | object = ...,
+    source_path: Path | None | object = ...,
+    status: str | None = None,
+    completed_at: str | None | object = ...,
+    archived: bool | None = None,
+    mode: str | None = None,
+    created_at: str | None = None,
+) -> None:
+    assignments: list[str] = []
+    params: list[object] = []
+
+    def add(name: str, value: object | None | object) -> None:
+        assignments.append(f"{name} = ?")
+        params.append(value)
+
+    if label is not None:
+        add("label", label)
+    if source_key is not None:
+        add("source_key", source_key)
+    if date is not None:
+        add("date", date)
+    if folder is not None:
+        add("folder", str(folder))
+    if summary_path is not ...:
+        add("summary_path", _db_path(summary_path if summary_path is not ... else None))
+    if transcript_path is not ...:
+        add("transcript_path", _db_path(transcript_path if transcript_path is not ... else None))
+    if audio_path is not ...:
+        add("audio_path", _db_path(audio_path if audio_path is not ... else None))
+    if source_path is not ...:
+        add("source_path", _db_path(source_path if source_path is not ... else None))
+    if status is not None:
+        add("status", status)
+    if completed_at is not ...:
+        add("completed_at", completed_at)
+    if archived is not None:
+        add("archived", int(archived))
+    if mode is not None:
+        add("mode", mode)
+    if created_at is not None:
+        add("created_at", created_at)
+
+    if not assignments:
+        return
+
+    params.append(session_id)
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            f"UPDATE sessions SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
 
 
 def archive_session(session_id: str, archived: bool = True) -> None:

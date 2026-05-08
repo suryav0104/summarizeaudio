@@ -1,4 +1,5 @@
 # tests/test_summarizer.py
+import json
 import queue
 import threading
 from pathlib import Path
@@ -21,20 +22,34 @@ def mock_ollama_response(text: str):
     mock = MagicMock()
     mock.status_code = 200
     mock.iter_lines.return_value = [
-        f'{{"response": "{text}", "done": false}}'.encode(),
+        json.dumps({"response": text, "done": False}).encode(),
         b'{"response": "", "done": true}',
     ]
     return mock
+
+
+def structured_summary(body: str = "- Great summary.") -> str:
+    return (
+        "**Key Points:**\n"
+        f"{body}\n\n"
+        "**Decisions / Action Items:**\n"
+        "- None.\n\n"
+        "**Notable Details:**\n"
+        "- None.\n"
+    )
 
 
 def test_summarizer_calls_ollama_and_saves_md(tmp_path, ui_queue):
     s = make_summarizer(tmp_path, ui_queue)
     out_md = tmp_path / "summary.md"
     with patch("requests.post") as mock_post:
-        mock_post.return_value = mock_ollama_response("Great summary.")
+        mock_post.return_value = mock_ollama_response(structured_summary())
         s.summarize("my transcript text", out_md)
     assert out_md.exists()
-    assert "Great summary." in out_md.read_text()
+    written = out_md.read_text()
+    assert "**Key Points:**" in written
+    assert "**Decisions / Action Items:**" in written
+    assert "**Notable Details:**" in written
 
 
 def test_summarizer_substitutes_transcript_into_prompt(tmp_path, ui_queue):
@@ -43,7 +58,7 @@ def test_summarizer_substitutes_transcript_into_prompt(tmp_path, ui_queue):
     captured = {}
     def fake_post(url, json=None, stream=False, timeout=None):
         captured["prompt"] = json.get("prompt", "")
-        return mock_ollama_response("ok")
+        return mock_ollama_response(structured_summary(" - one bullet."))
     with patch("requests.post", side_effect=fake_post):
         s.summarize("HELLO WORLD", out_md)
     assert "HELLO WORLD" in captured["prompt"]
@@ -55,10 +70,10 @@ def test_summarizer_chunks_long_transcript_and_combines_summaries(tmp_path, ui_q
     prompts = []
     responses = iter(
         [
-            mock_ollama_response("Chunk summary one."),
-            mock_ollama_response("Chunk summary two."),
-            mock_ollama_response("Chunk summary three."),
-            mock_ollama_response("Final combined summary."),
+            mock_ollama_response(structured_summary("- Chunk summary one.")),
+            mock_ollama_response(structured_summary("- Chunk summary two.")),
+            mock_ollama_response(structured_summary("- Chunk summary three.")),
+            mock_ollama_response(structured_summary("- Final combined summary.")),
         ]
     )
 
@@ -73,7 +88,7 @@ def test_summarizer_chunks_long_transcript_and_combines_summaries(tmp_path, ui_q
         s.summarize(long_transcript, out_md)
 
     assert out_md.exists()
-    assert out_md.read_text() == "Final combined summary."
+    assert "Final combined summary." in out_md.read_text()
     assert len(prompts) == 4
     assert "Chunk summary one." in prompts[-1]
     assert "Chunk summary two." in prompts[-1]
@@ -110,3 +125,35 @@ def test_summarizer_ollama_connection_error_raises_ollama_error(tmp_path, ui_que
         with pytest.raises(OllamaError):
             s.summarize("text", out_md)
     assert not out_md.exists()
+
+
+def test_summarizer_rejects_malformed_summary(tmp_path, ui_queue):
+    s = make_summarizer(tmp_path, ui_queue)
+    out_md = tmp_path / "summary.md"
+    with patch("requests.post") as mock_post:
+        mock_post.return_value = mock_ollama_response("This is just a paragraph with no sections.")
+        with pytest.raises(OllamaError):
+            s.summarize("text", out_md)
+    assert not out_md.exists()
+
+
+def test_summarizer_normalizes_heading_variants_and_spacing(tmp_path, ui_queue):
+    s = make_summarizer(tmp_path, ui_queue)
+    out_md = tmp_path / "summary.md"
+    raw = (
+        "### Key Points:\n"
+        "- One.\n"
+        "\n\n"
+        "## Decisions / Action Items\n"
+        "- Two.\n"
+        "\n"
+        "**Notable Details:**\n"
+        "- Three.\n"
+    )
+    with patch("requests.post") as mock_post:
+        mock_post.return_value = mock_ollama_response(raw)
+        s.summarize("text", out_md)
+    written = out_md.read_text()
+    assert written.startswith("**Key Points:**\n- One.")
+    assert "**Decisions / Action Items:**" in written
+    assert "**Notable Details:**" in written

@@ -6,6 +6,7 @@ import queue
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import tkinter as tk
@@ -15,7 +16,7 @@ from tkinter.scrolledtext import ScrolledText
 from summarizeaudio.config import load_config
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.chooser_window import _native_audio_picker, _native_text_picker
-from summarizeaudio.sessions import session_action_specs, session_for_summary_path
+from summarizeaudio.sessions import session_by_id, session_for_summary_path
 
 
 class _MarqueeProgress:
@@ -143,13 +144,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SummarizeAudio workflow window.")
     parser.add_argument("--mode", choices=("record", "audio", "text"), required=True)
     parser.add_argument("--source", default="", help="Optional source path for record mode")
+    parser.add_argument("--resume-session-id", default="", help="Optional session id to resume in place")
     return parser
 
 
 class WorkflowWindow:
-    def __init__(self, mode: str, source: str | None = None) -> None:
+    def __init__(self, mode: str, source: str | None = None, resume_session_id: str | None = None) -> None:
         self._mode = mode
         self._source = Path(source) if source else None
+        self._resume_session_id = resume_session_id
         self._ui_queue: queue.Queue = queue.Queue()
         self._cfg = load_config(self._ui_queue)
         self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
@@ -174,6 +177,7 @@ class WorkflowWindow:
         self._summary_path: Path | None = None
         self._summary_preview = ""
         self._active_source: Path | None = self._source
+        self._resume_session = session_by_id(self._resume_session_id) if self._resume_session_id else None
         self._pipeline_started = False
         self._processing_started = False
         self._step_state = "chooser"
@@ -513,8 +517,7 @@ class WorkflowWindow:
         )
         self._render_steps(body)
 
-        summary_path = self._summary_path
-        session = session_for_summary_path(self._cfg.storage.output_folder, summary_path) if summary_path is not None else None
+        session = self._summary_session()
         preview_box = ttk.Frame(body, style="Card.TFrame")
         preview_box.pack(fill="both", expand=True, pady=(8, 8))
         preview = self._text_widget(preview_box, width=96, height=8)
@@ -524,11 +527,56 @@ class WorkflowWindow:
 
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(fill="x", pady=(8, 0))
-        if session is not None and session.transcript is not None:
-            self._button(actions, text="Open Transcript", command=lambda: self._open_path(session.transcript), primary=True).pack(side="left")
-        if session is not None and session.audio is not None:
-            self._button(actions, text="Open Recording", command=lambda: self._open_path(session.audio), primary=False).pack(side="left", padx=(8, 0))
+        action_specs = self._summary_action_specs(session)
+        for index, (label, path) in enumerate(action_specs):
+            self._button(
+                actions,
+                text=label,
+                command=lambda resolved=path: self._open_path(resolved),
+                primary=index == 0,
+            ).pack(side="left", padx=(0 if index == 0 else 8, 0))
         self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
+
+    def _summary_session(self):
+        summary_path = self._summary_path
+        resume_session = self._resume_session
+        fallback_session = None
+        if summary_path is not None:
+            fallback_session = session_for_summary_path(self._cfg.storage.output_folder, summary_path)
+        if resume_session is None:
+            return fallback_session
+        if fallback_session is None:
+            return resume_session
+        try:
+            if summary_path is not None and resume_session.summary is not None and resume_session.summary.resolve() != summary_path.resolve():
+                return fallback_session
+        except Exception:
+            return fallback_session
+        if (
+            resume_session.summary == fallback_session.summary
+            and resume_session.transcript == fallback_session.transcript
+            and resume_session.audio == fallback_session.audio
+            and resume_session.source_path == fallback_session.source_path
+        ):
+            return resume_session
+        return replace(
+            resume_session,
+            summary=resume_session.summary or fallback_session.summary,
+            transcript=resume_session.transcript or fallback_session.transcript,
+            audio=resume_session.audio or fallback_session.audio,
+            source_path=resume_session.source_path or fallback_session.source_path,
+            folder=resume_session.folder or fallback_session.folder,
+        )
+
+    def _summary_action_specs(self, session) -> list[tuple[str, Path]]:
+        if session is None:
+            return []
+        specs: list[tuple[str, Path]] = []
+        if session.transcript is not None and session.transcript.exists():
+            specs.append(("Open Transcript", session.transcript))
+        if session.audio is not None and session.audio.exists():
+            specs.append(("Open Recording", session.audio))
+        return specs
 
     def _render_steps(self, body: ttk.Frame) -> None:
         steps = ttk.Frame(body, style="Card.TFrame")
@@ -638,13 +686,28 @@ class WorkflowWindow:
         def run() -> None:
             if self._mode == "record":
                 assert self._active_source is not None
-                self._pipeline.run(PipelineMode.RECORD, "recording", mp3_path=self._active_source)
+                self._pipeline.run(
+                    PipelineMode.RECORD,
+                    "recording",
+                    mp3_path=self._active_source,
+                    resume_session_id=self._resume_session_id,
+                )
             elif self._mode == "audio":
                 assert self._active_source is not None
-                self._pipeline.run(PipelineMode.LOCAL_AUDIO, "audio", source_path=self._active_source)
+                self._pipeline.run(
+                    PipelineMode.LOCAL_AUDIO,
+                    "audio",
+                    source_path=self._active_source,
+                    resume_session_id=self._resume_session_id,
+                )
             else:
                 assert self._active_source is not None
-                self._pipeline.run(PipelineMode.LOCAL_TEXT, "text", source_path=self._active_source)
+                self._pipeline.run(
+                    PipelineMode.LOCAL_TEXT,
+                    "text",
+                    source_path=self._active_source,
+                    resume_session_id=self._resume_session_id,
+                )
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -710,6 +773,8 @@ class WorkflowWindow:
                 self._summary_preview = self._summary_path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 self._summary_preview = ""
+            if self._resume_session_id:
+                self._resume_session = session_by_id(self._resume_session_id) or self._resume_session
             self._step_state = "message"
             self._state = "summary"
             self._detail_text = f"The summary was saved to:\n{path}"
@@ -739,7 +804,7 @@ class WorkflowWindow:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    window = WorkflowWindow(args.mode, source=args.source or None)
+    window = WorkflowWindow(args.mode, source=args.source or None, resume_session_id=args.resume_session_id or None)
     return window.run()
 
 

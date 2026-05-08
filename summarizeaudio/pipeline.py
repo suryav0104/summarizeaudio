@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import threading
 import traceback
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from summarizeaudio.error_handler import friendly_message, post_error
 from summarizeaudio.renamer import Renamer
 from summarizeaudio.summarizer import Summarizer, OllamaError
 from summarizeaudio.transcriber import Transcriber
+from summarizeaudio.sessions import create_session_record, session_by_id, session_source_key_exists, update_session_record
 
 
 class _NameEvent:
@@ -94,6 +96,7 @@ class Pipeline:
         session_name: str,
         mp3_path: Path | None = None,
         source_path: Path | None = None,
+        resume_session_id: str | None = None,
         done_event: threading.Event | None = None,
     ) -> None:
         """Execute the full pipeline for the given mode.
@@ -105,7 +108,7 @@ class Pipeline:
         log.info("Pipeline starting: mode=%s session=%r", mode.value, session_name)
         self._error_posted = False
         try:
-            self._run_inner(mode, session_name, mp3_path, source_path)
+            self._run_inner(mode, session_name, mp3_path, source_path, resume_session_id=resume_session_id)
         except Exception as exc:
             tb = traceback.format_exc()
             log.exception("Pipeline failed: mode=%s session=%r", mode.value, session_name)
@@ -136,12 +139,68 @@ class Pipeline:
         result = result.strip()
         return result or default_name
 
+    def _today(self) -> str:
+        return date.today().strftime("%m-%d-%y")
+
+    def _now_iso(self) -> str:
+        return datetime.now(tz=timezone.utc).isoformat()
+
+    def _create_workflow_session(
+        self,
+        *,
+        workflow_key: str,
+        label: str,
+        mode: PipelineMode,
+        source_path: Path | None,
+        audio_path: Path | None = None,
+        transcript_path: Path | None = None,
+    ):
+        return create_session_record(
+            root=self._cfg.storage.output_folder,
+            source_key=workflow_key,
+            label=label,
+            date=self._today(),
+            mode=mode.value,
+            folder=self._cfg.storage.output_folder,
+            status="in_progress",
+            audio_path=audio_path,
+            transcript_path=transcript_path,
+            source_path=source_path,
+            created_at=self._now_iso(),
+        )
+
+    def _complete_workflow_session(
+        self,
+        *,
+        session_id: str,
+        source_key: str,
+        label: str,
+        mode: PipelineMode,
+        source_path: Path | None,
+        session_paths,
+    ) -> None:
+        update_session_record(
+            session_id=session_id,
+            source_key=source_key,
+            label=label,
+            date=self._today(),
+            folder=session_paths.summary.parent,
+            summary_path=session_paths.summary,
+            transcript_path=session_paths.transcript,
+            audio_path=session_paths.audio,
+            source_path=source_path,
+            status="completed",
+            completed_at=self._now_iso(),
+            mode=mode.value,
+        )
+
     def _run_inner(
         self,
         mode: PipelineMode,
         session_name: str,
         mp3_path: Path | None,
         source_path: Path | None,
+        resume_session_id: str | None = None,
     ) -> None:
         cfg = self._cfg
         renamer = Renamer(cfg.storage.output_folder)
@@ -156,6 +215,25 @@ class Pipeline:
             beh=cfg.behavior,
             ui_queue=self._ui_queue,
         )
+        workflow_key = str(uuid4())
+        workflow_label = (
+            "Recording"
+            if mode == PipelineMode.RECORD
+            else "Audio file"
+            if mode == PipelineMode.LOCAL_AUDIO
+            else "Text file"
+        )
+        resumed_workflow = resume_session_id is not None
+        workflow_source = mp3_path if mode == PipelineMode.RECORD else source_path
+        workflow_session = session_by_id(resume_session_id) if resume_session_id else None
+        if workflow_session is None:
+            workflow_session = self._create_workflow_session(
+                workflow_key=workflow_key,
+                label=workflow_label,
+                mode=mode,
+                source_path=workflow_source,
+                audio_path=mp3_path if mode == PipelineMode.RECORD else None,
+            )
 
         if mode == PipelineMode.LOCAL_TEXT:
             # Mode 3: copy text → summarize → ask for final name
@@ -165,24 +243,62 @@ class Pipeline:
             tmp_txt = cfg.storage.output_folder / f"{session_id}.txt"
             tmp_md = cfg.storage.output_folder / f"{session_id}.md"
             shutil.copy2(source_path, tmp_txt)
+            update_session_record(
+                session_id=workflow_session.id,
+                transcript_path=tmp_txt,
+                status="in_progress",
+            )
             transcript_text = tmp_txt.read_text(encoding="utf-8-sig", errors="replace")
             log.info("Mode 3: summarizing %d chars", len(transcript_text))
             try:
                 summarizer.summarize(transcript_text, tmp_md)
             except OllamaError as exc:
                 log.exception("Mode 3: Ollama unavailable")
+                update_session_record(
+                    session_id=workflow_session.id,
+                    status="failed",
+                    completed_at=self._now_iso(),
+                )
                 self._ui_queue.put_nowait(("fatal_error", "Ollama is not running or has crashed.", str(exc)))
                 return
             if not tmp_md.exists():
+                update_session_record(
+                    session_id=workflow_session.id,
+                    summary_path=None,
+                    status="partial",
+                )
                 self._ui_queue.put_nowait(("info_dialog", "Transcription complete.", "No summary file was created."))
                 return
             summary_text = tmp_md.read_text(encoding="utf-8-sig", errors="replace")
+            update_session_record(
+                session_id=workflow_session.id,
+                summary_path=tmp_md,
+                status="partial",
+            )
             self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
             final_name = self._request_final_name(_derive_default_name(summary_text, fallback=session_name))
             if final_name is None:
+                update_session_record(
+                    session_id=workflow_session.id,
+                    status="partial",
+                )
                 return
             session = renamer.rename_session(final_name, mp3_path=None, txt_path=tmp_txt)
             shutil.move(str(tmp_md), session.summary)
+            summary_source_key = None
+            if not resumed_workflow or not session_source_key_exists(session.summary.stem):
+                summary_source_key = session.summary.stem
+            update_session_record(
+                session_id=workflow_session.id,
+                label=final_name,
+                folder=session.summary.parent,
+                summary_path=session.summary,
+                transcript_path=session.transcript,
+                status="completed",
+                completed_at=self._now_iso(),
+                mode=mode.value,
+                source_key=summary_source_key,
+            )
             self._ui_queue.put_nowait(("summary_ready", session.summary))
             return
 
@@ -226,10 +342,21 @@ class Pipeline:
                 )
                 return
             transcription_source = temp_audio_copy
+            update_session_record(
+                session_id=workflow_session.id,
+                source_path=audio_for_transcription,
+                audio_path=mp3_path if mode == PipelineMode.RECORD else temp_audio_copy,
+                status="in_progress",
+            )
         try:
             transcriber.transcribe(transcription_source, tmp_txt)
         except Exception as exc:
             log.exception("Transcription failed for %s", audio_for_transcription)
+            update_session_record(
+                session_id=workflow_session.id,
+                status="failed",
+                completed_at=self._now_iso(),
+            )
             self._post_error(
                 "pipeline.py → transcriber",
                 friendly_message(
@@ -243,6 +370,11 @@ class Pipeline:
                 tmp_txt.unlink()
             raise
         log.info("Transcription complete, output: %s", tmp_txt)
+        update_session_record(
+            session_id=workflow_session.id,
+            transcript_path=tmp_txt,
+            status="partial",
+        )
 
         transcript_text = tmp_txt.read_text(encoding="utf-8-sig", errors="replace").strip()
         if len(transcript_text) < 20:
@@ -263,24 +395,46 @@ class Pipeline:
                     message,
                 )
             )
+            update_session_record(
+                session_id=workflow_session.id,
+                status="partial",
+            )
             return
         log.info("Summarizing %d chars → %s", len(transcript_text), tmp_md)
         try:
             summarizer.summarize(transcript_text, tmp_md)
         except OllamaError as exc:
             log.exception("Ollama unavailable")
+            update_session_record(
+                session_id=workflow_session.id,
+                status="failed",
+                completed_at=self._now_iso(),
+            )
             self._ui_queue.put_nowait(("fatal_error", "Ollama is not running or has crashed.", str(exc)))
             return
 
         if not tmp_md.exists():
             log.warning("Summary file not created")
+            update_session_record(
+                session_id=workflow_session.id,
+                status="partial",
+            )
             self._ui_queue.put_nowait(("info_dialog", "Transcription complete.", "No summary file was created."))
             return
 
         summary_text = tmp_md.read_text(encoding="utf-8-sig", errors="replace")
+        update_session_record(
+            session_id=workflow_session.id,
+            summary_path=tmp_md,
+            status="partial",
+        )
         self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
         final_name = self._request_final_name(_derive_default_name(summary_text, fallback=session_name))
         if final_name is None:
+            update_session_record(
+                session_id=workflow_session.id,
+                status="partial",
+            )
             return
 
         if mode == PipelineMode.RECORD:
@@ -293,6 +447,22 @@ class Pipeline:
         log.info("Summary written: %s (%d bytes)", session.summary, session.summary.stat().st_size)
         if temp_audio_copy is not None and temp_audio_copy.exists():
             temp_audio_copy.unlink(missing_ok=True)
+        summary_source_key = None
+        if not resumed_workflow or not session_source_key_exists(session.summary.stem):
+            summary_source_key = session.summary.stem
+        update_session_record(
+            session_id=workflow_session.id,
+            label=final_name,
+            folder=session.summary.parent,
+            summary_path=session.summary,
+            transcript_path=session.transcript,
+            audio_path=session.audio,
+            source_path=audio_for_transcription,
+            status="completed",
+            completed_at=self._now_iso(),
+            mode=mode.value,
+            source_key=summary_source_key,
+        )
         self._ui_queue.put_nowait(("summary_ready", session.summary))
 
     def _post_error(self, component: str, message: str, traceback_str: str) -> None:

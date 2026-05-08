@@ -10,11 +10,13 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from summarizeaudio import sessions as session_store
 from summarizeaudio.pipeline import Pipeline, PipelineMode, _derive_default_name
 from summarizeaudio.config import (
     AppConfig, StorageConfig, WhisperConfig, OllamaConfig,
     SummarizationConfig, BehaviorConfig, RecordingConfig,
 )
+from summarizeaudio.sessions import load_sessions
 
 
 def today():
@@ -47,7 +49,7 @@ def mock_ollama(monkeypatch):
     mock = MagicMock()
     mock.status_code = 200
     mock.iter_lines.return_value = [
-        b'{"response": "A summary.", "done": false}',
+        b'{"response": "**Key Points:**\\n- A summary.\\n\\n**Decisions / Action Items:**\\n- None.\\n\\n**Notable Details:**\\n- None.\\n", "done": false}',
         b'{"response": "", "done": true}',
     ]
     monkeypatch.setattr("requests.post", lambda *a, **kw: mock)
@@ -167,6 +169,31 @@ def test_mode1_posts_summarizing_phase_before_name_dialog(tmp_output, monkeypatc
     assert kinds.index("workflow_phase") < kinds.index("name_dialog")
 
 
+def test_partial_session_is_saved_before_summarization_completes(tmp_output, ui_queue, monkeypatch):
+    db_path = tmp_output / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    def failing_summarize(self, transcript_text, out_md):
+        raise RuntimeError("summary crashed")
+
+    mock_ollama(monkeypatch)
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+    )
+    monkeypatch.setattr("summarizeaudio.summarizer.Summarizer.summarize", failing_summarize)
+    cfg = make_config(tmp_output)
+    mp3 = make_silence_mp3(tmp_output / "session.mp3")
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    p.run(mode=PipelineMode.RECORD, session_name="CrashDuringSummarize", mp3_path=mp3)
+
+    sessions = load_sessions(tmp_output, include_archived=False)
+    assert sessions
+    assert sessions[0].status == "partial"
+    assert sessions[0].summary is None or not sessions[0].summary.exists()
+
+
 def test_mode2_does_not_touch_source_file(tmp_output, ui_queue, monkeypatch):
     """Pipeline orchestration test — mocks Transcriber."""
     mock_ollama(monkeypatch)
@@ -239,6 +266,46 @@ def test_mode3_does_not_touch_source_txt(tmp_output, ui_queue, monkeypatch):
     p.run(mode=PipelineMode.LOCAL_TEXT, session_name="notes", source_path=source)
     assert source.exists()
     assert source.read_text() == "my notes"
+
+
+def test_mode3_resume_keeps_existing_recording_path(tmp_output, ui_queue, monkeypatch):
+    db_path = tmp_output / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    mock_ollama(monkeypatch)
+    monkeypatch.setattr(
+        "summarizeaudio.summarizer.Summarizer.summarize",
+        lambda self, transcript_text, out_md: out_md.write_text(
+            "**Key Points:**\n- Retry summary.\n\n**Decisions / Action Items:**\n- Keep recording.\n\n**Notable Details:**\n- None.\n",
+            encoding="utf-8",
+        ),
+    )
+
+    source = tmp_output / "notes.txt"
+    source.write_text("transcript content long enough to summarize", encoding="utf-8")
+    recording = tmp_output / "recording.mp3"
+    make_silence_mp3(recording)
+    existing = session_store.create_session_record(
+        root=tmp_output,
+        source_key="resume-session",
+        label="Topic",
+        date=today(),
+        mode="text",
+        folder=tmp_output / "SummaryFiles",
+        status="partial",
+        transcript_path=source,
+        audio_path=recording,
+        source_path=recording,
+    )
+
+    p = Pipeline(cfg=make_config(tmp_output), ui_queue=ui_queue)
+    resolve_name_dialog(ui_queue, "Retry Topic")
+    p.run(mode=PipelineMode.LOCAL_TEXT, session_name="notes", source_path=source, resume_session_id=existing.id)
+
+    resumed = session_store.session_by_id(existing.id)
+    assert resumed is not None
+    assert resumed.audio is not None
+    assert resumed.audio.exists()
 
 
 def test_pipeline_override_dismissed_produces_no_summary(tmp_output, ui_queue, monkeypatch):
