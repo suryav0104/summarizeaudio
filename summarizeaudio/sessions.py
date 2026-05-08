@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,8 +10,15 @@ from pathlib import Path
 
 from summarizeaudio.config import CONFIG_DIR
 
-_SESSION_SUMMARY_RE = re.compile(
-    r"^Summary - (?P<name>.+?)_(?P<date>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_\d+)?)$"
+_DATE_RE = r"(?P<date>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_\d+)?)"
+_SESSION_SUMMARY_RE = re.compile(rf"^Summary - (?P<name>.+?) {_DATE_RE}$")
+_SESSION_SUMMARY_OLD_RE = re.compile(rf"^Summary - (?P<name>.+?)_(?P<date>\d{{2}}-\d{{2}}-\d{{2}})(?P<suffix>(?:_\d+)?)$")
+_SESSION_AUDIO_RE = re.compile(rf"^Audio - (?P<name>.+?) {_DATE_RE}$")
+_SESSION_AUDIO_OLD_RE = re.compile(rf"^Audio_(?P<name>.+?)_(?P<date>\d{{2}}-\d{{2}}-\d{{2}})(?P<suffix>(?:_\d+)?)$")
+_SESSION_TRANSCRIPT_RE = re.compile(rf"^Transcript - (?P<name>.+?) {_DATE_RE}$")
+_SESSION_TRANSCRIPT_OLD_RE = re.compile(rf"^Transcript_(?P<name>.+?)_(?P<date>\d{{2}}-\d{{2}}-\d{{2}})(?P<suffix>(?:_\d+)?)$")
+_SESSION_ARTIFACT_RE = re.compile(
+    r"^(?P<prefix>.+?)(?: (?P<date>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_\d+)?)|_(?P<legacy_date>\d{2}-\d{2}-\d{2})(?P<legacy_suffix>(?:_\d+)?)?)?$"
 )
 
 HISTORY_DB = CONFIG_DIR / "history.sqlite3"
@@ -33,6 +41,14 @@ class SessionFiles:
     archived: bool = False
     mode: str = "unknown"
     source_key: str = ""
+
+
+@dataclass(frozen=True)
+class ArtifactParts:
+    kind: str
+    name: str
+    date: str
+    suffix: str = ""
 
 
 def _connect() -> sqlite3.Connection:
@@ -119,6 +135,84 @@ def _session_key_for_summary(summary: Path) -> str:
     return summary.stem
 
 
+def _artifact_filename(kind: str, name: str, date: str, suffix: str = "") -> str:
+    if kind == "audio":
+        return f"Audio - {name} {date}{suffix}.mp3"
+    if kind == "transcript":
+        return f"Transcript - {name} {date}{suffix}.txt"
+    if kind == "summary":
+        return f"Summary - {name} {date}{suffix}.md"
+    raise ValueError(f"Unsupported artifact kind: {kind}")
+
+
+def _artifact_path(root: Path, kind: str, name: str, date: str, suffix: str = "") -> Path:
+    folder = {
+        "audio": "AudioFiles",
+        "transcript": "TranscriptionFiles",
+        "summary": "SummaryFiles",
+    }.get(kind)
+    if folder is None:
+        raise ValueError(f"Unsupported artifact kind: {kind}")
+    return root / folder / _artifact_filename(kind, name, date, suffix)
+
+
+def _parse_artifact_stem(stem: str) -> ArtifactParts | None:
+    patterns: tuple[tuple[str, re.Pattern[str]], ...] = (
+        ("summary", _SESSION_SUMMARY_RE),
+        ("summary", _SESSION_SUMMARY_OLD_RE),
+        ("audio", _SESSION_AUDIO_RE),
+        ("audio", _SESSION_AUDIO_OLD_RE),
+        ("transcript", _SESSION_TRANSCRIPT_RE),
+        ("transcript", _SESSION_TRANSCRIPT_OLD_RE),
+    )
+    for kind, pattern in patterns:
+        match = pattern.match(stem)
+        if match:
+            return ArtifactParts(
+                kind=kind,
+                name=match.group("name"),
+                date=match.group("date"),
+                suffix=match.group("suffix") or "",
+            )
+    return None
+
+
+def _rename_artifact_path(path: Path | None, target: Path) -> Path | None:
+    if path is None:
+        return None
+    if path == target:
+        return target
+    if path.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            try:
+                if path.resolve() != target.resolve():
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            shutil.move(str(path), target)
+    return target
+
+
+def display_artifact_name(path: Path | None) -> str:
+    if path is None:
+        return ""
+    stem = path.stem
+    suffix = path.suffix
+    match = _SESSION_ARTIFACT_RE.match(stem)
+    if match and (match.group("date") or match.group("legacy_date")):
+        stem = match.group("prefix")
+    return f"{stem}{suffix}"
+
+
+def display_session_label(label: str) -> str:
+    match = re.match(r"^(?P<name>.+?) \((?P<date>\d{2}-\d{2}-\d{2})\)$", label)
+    if match:
+        return match.group("name")
+    return label
+
+
 def _metadata_get(conn: sqlite3.Connection, key: str) -> str | None:
     row = conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
     return None if row is None else row["value"]
@@ -153,6 +247,85 @@ def _maybe_archive_initial_sessions(conn: sqlite3.Connection, root: Path, keep: 
     for row in scoped[keep:]:
         conn.execute("UPDATE sessions SET archived = 1 WHERE id = ?", (row["id"],))
     _metadata_set(conn, migration_key, datetime.now(tz=timezone.utc).isoformat())
+
+
+def _row_artifact_parts(row: sqlite3.Row, root: Path) -> ArtifactParts | None:
+    for field in ("summary_path", "transcript_path", "audio_path", "source_path"):
+        raw = row[field]
+        if not raw:
+            continue
+        path = Path(raw)
+        if field == "source_path" and not _is_in_root(str(path.parent), root):
+            continue
+        parts = _parse_artifact_stem(path.stem)
+        if parts is not None:
+            return parts
+    return None
+
+
+def _migrate_legacy_filenames(conn: sqlite3.Connection, root: Path) -> None:
+    rows = conn.execute("SELECT * FROM sessions").fetchall()
+    for row in rows:
+        if not _is_in_root(row["folder"], root):
+            continue
+        parts = _row_artifact_parts(row, root)
+        if parts is None:
+            continue
+
+        summary_target = _artifact_path(root, "summary", parts.name, parts.date, parts.suffix)
+        transcript_target = _artifact_path(root, "transcript", parts.name, parts.date, parts.suffix)
+        audio_target = _artifact_path(root, "audio", parts.name, parts.date, parts.suffix)
+
+        summary_path = Path(row["summary_path"]) if row["summary_path"] else None
+        transcript_path = Path(row["transcript_path"]) if row["transcript_path"] else None
+        audio_path = Path(row["audio_path"]) if row["audio_path"] else None
+        source_path = Path(row["source_path"]) if row["source_path"] else None
+
+        new_summary = _rename_artifact_path(summary_path, summary_target)
+        new_transcript = _rename_artifact_path(transcript_path, transcript_target)
+        new_audio = _rename_artifact_path(audio_path, audio_target)
+        new_source = source_path
+        if source_path is not None and _is_in_root(str(source_path.parent), root):
+            source_parts = _parse_artifact_stem(source_path.stem)
+            if source_parts is not None:
+                source_target = _artifact_path(root, source_parts.kind, source_parts.name, source_parts.date, source_parts.suffix)
+                new_source = _rename_artifact_path(source_path, source_target)
+
+        updates = {
+            "summary_path": _db_path(new_summary),
+            "transcript_path": _db_path(new_transcript),
+            "audio_path": _db_path(new_audio),
+            "source_path": _db_path(new_source),
+        }
+        if row["summary_path"]:
+            candidate_source_key = summary_target.stem
+            conflict = conn.execute(
+                "SELECT id FROM sessions WHERE source_key = ? AND id != ? LIMIT 1",
+                (candidate_source_key, row["id"]),
+            ).fetchone()
+            if conflict is None:
+                updates["source_key"] = candidate_source_key
+
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        conn.execute(
+            f"UPDATE sessions SET {assignments} WHERE id = ?",
+            (*updates.values(), row["id"]),
+        )
+
+
+def _migrate_legacy_files_on_disk(root: Path) -> None:
+    for folder_name in ("SummaryFiles", "TranscriptionFiles", "AudioFiles"):
+        folder = root / folder_name
+        if not folder.exists():
+            continue
+        for path in sorted(folder.iterdir()):
+            if not path.is_file():
+                continue
+            parts = _parse_artifact_stem(path.stem)
+            if parts is None:
+                continue
+            target = _artifact_path(root, parts.kind, parts.name, parts.date, parts.suffix)
+            _rename_artifact_path(path, target)
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionFiles:
@@ -193,18 +366,15 @@ def _scan_filesystem_sessions(root: Path) -> list[SessionFiles]:
     )
     sessions: list[SessionFiles] = []
     for summary in candidates:
-        match = _SESSION_SUMMARY_RE.match(summary.stem)
-        if not match:
+        parts = _parse_artifact_stem(summary.stem)
+        if parts is None or parts.kind != "summary":
             continue
-        name = match.group("name")
-        date = match.group("date")
-        suffix = match.group("suffix")
-        transcript = root / "TranscriptionFiles" / f"Transcript_{name}_{date}{suffix}.txt"
-        audio = root / "AudioFiles" / f"Audio_{name}_{date}{suffix}.mp3"
+        transcript = _artifact_path(root, "transcript", parts.name, parts.date, parts.suffix)
+        audio = _artifact_path(root, "audio", parts.name, parts.date, parts.suffix)
         sessions.append(
             SessionFiles(
-                label=f"{name} ({date})",
-                date=date,
+                label=f"{parts.name} ({parts.date})",
+                date=parts.date,
                 folder=summary.parent,
                 summary=summary,
                 transcript=transcript if transcript.exists() else None,
@@ -222,9 +392,11 @@ def _scan_filesystem_sessions(root: Path) -> list[SessionFiles]:
 
 
 def sync_sessions_from_filesystem(root: Path) -> None:
-    discovered = _scan_filesystem_sessions(root)
     with _connect() as conn:
         _ensure_schema(conn)
+        _migrate_legacy_filenames(conn, root)
+        _migrate_legacy_files_on_disk(root)
+        discovered = _scan_filesystem_sessions(root)
         for session in discovered:
             existing = conn.execute(
                 "SELECT id, created_at, status, archived FROM sessions WHERE source_key = ?",
@@ -346,18 +518,15 @@ def session_for_summary_path(root: Path, summary: Path) -> SessionFiles | None:
         if session.summary.resolve() == summary_resolved:
             return session
 
-    match = _SESSION_SUMMARY_RE.match(summary.stem)
-    if not match:
+    parts = _parse_artifact_stem(summary.stem)
+    if parts is None or parts.kind != "summary":
         return None
 
-    name = match.group("name")
-    date = match.group("date")
-    suffix = match.group("suffix")
-    transcript = root / "TranscriptionFiles" / f"Transcript_{name}_{date}{suffix}.txt"
-    audio = root / "AudioFiles" / f"Audio_{name}_{date}{suffix}.mp3"
+    transcript = _artifact_path(root, "transcript", parts.name, parts.date, parts.suffix)
+    audio = _artifact_path(root, "audio", parts.name, parts.date, parts.suffix)
     return SessionFiles(
-        label=f"{name} ({date})",
-        date=date,
+        label=f"{parts.name} ({parts.date})",
+        date=parts.date,
         folder=summary.parent,
         summary=summary,
         transcript=transcript if transcript.exists() else None,

@@ -12,7 +12,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 
 from summarizeaudio.config import load_config
-from summarizeaudio.sessions import archive_session, load_sessions, session_action_specs
+from summarizeaudio.sessions import archive_session, display_artifact_name, display_session_label, load_sessions, session_action_specs
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -223,7 +223,7 @@ class HistoryWindow:
                 "",
                 "end",
                 iid=str(index),
-                values=(self._session_display_label(session), session.date),
+                values=(self._session_row_label(session), f"  {session.date}"),
                 tags=tags,
             )
         self._session_list.tag_configure("row_even", background="#ffffff")
@@ -274,7 +274,7 @@ class HistoryWindow:
         path_box.pack(fill="x", pady=(0, 12))
         title_row = ttk.Frame(path_box, style="Card.TFrame")
         title_row.pack(fill="x")
-        ttk.Label(title_row, text=session.label, style="Step.TLabel").pack(side="left", anchor="w")
+        ttk.Label(title_row, text=display_session_label(session.label), style="Step.TLabel").pack(side="left", anchor="w")
         if session.archived:
             ttk.Label(title_row, text="Archived", style="Badge.TLabel", padding=(10, 4)).pack(side="left", padx=(12, 0))
             ttk.Label(path_box, text="Archived session", style="Detail.TLabel").pack(anchor="w", pady=(2, 0))
@@ -394,9 +394,13 @@ class HistoryWindow:
             pass
 
     def _session_display_label(self, session) -> str:
-        if getattr(session, "status", "completed") in {"partial", "failed", "in_progress"}:
-            return f"* {session.label}"
         return session.label
+
+    def _session_row_label(self, session) -> str:
+        label = display_session_label(self._session_display_label(session))
+        if getattr(session, "status", "completed") in {"partial", "failed", "in_progress"}:
+            return f"* {label}"
+        return f"  {label}"
 
     def _open_file(self, path: Path) -> None:
         try:

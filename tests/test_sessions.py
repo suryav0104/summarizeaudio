@@ -25,13 +25,13 @@ def test_discover_sessions_orders_newest_first_and_filters_missing_files(tmp_pat
     transcript_dir.mkdir(parents=True)
     audio_dir.mkdir(parents=True)
 
-    older_summary = summary_dir / "Summary - Older_05-08-26.md"
-    newer_summary = summary_dir / "Summary - Newer_05-09-26.md"
+    older_summary = summary_dir / "Summary - Older 05-08-26.md"
+    newer_summary = summary_dir / "Summary - Newer 05-09-26.md"
     older_summary.write_text("older")
     newer_summary.write_text("newer")
-    transcript = transcript_dir / "Transcript_Newer_05-09-26.txt"
+    transcript = transcript_dir / "Transcript - Newer 05-09-26.txt"
     transcript.write_text("transcript")
-    audio = audio_dir / "Audio_Newer_05-09-26.mp3"
+    audio = audio_dir / "Audio - Newer 05-09-26.mp3"
     audio.write_text("audio")
 
     os.utime(older_summary, (1, 1))
@@ -58,9 +58,9 @@ def test_discover_sessions_syncs_filesystem_sessions_into_sqlite(tmp_path, monke
     transcript_dir.mkdir(parents=True)
     audio_dir.mkdir(parents=True)
 
-    summary = summary_dir / "Summary - Topic_05-10-26.md"
-    transcript = transcript_dir / "Transcript_Topic_05-10-26.txt"
-    audio = audio_dir / "Audio_Topic_05-10-26.mp3"
+    summary = summary_dir / "Summary - Topic 05-10-26.md"
+    transcript = transcript_dir / "Transcript - Topic 05-10-26.txt"
+    audio = audio_dir / "Audio - Topic 05-10-26.mp3"
     summary.write_text("summary")
     transcript.write_text("transcript")
     audio.write_text("audio")
@@ -82,7 +82,7 @@ def test_discover_sessions_syncs_filesystem_sessions_into_sqlite(tmp_path, monke
     ]
 
 
-def test_session_for_summary_path_recovers_matching_artifacts(tmp_path):
+def test_legacy_filename_migration_renames_files_and_updates_sqlite(tmp_path, monkeypatch):
     root = tmp_path / "Output"
     summary_dir = root / "SummaryFiles"
     transcript_dir = root / "TranscriptionFiles"
@@ -94,6 +94,64 @@ def test_session_for_summary_path_recovers_matching_artifacts(tmp_path):
     summary = summary_dir / "Summary - Topic_05-10-26.md"
     transcript = transcript_dir / "Transcript_Topic_05-10-26.txt"
     audio = audio_dir / "Audio_Topic_05-10-26.mp3"
+    summary.write_text("summary")
+    transcript.write_text("transcript")
+    audio.write_text("audio")
+
+    db_path = tmp_path / "history.sqlite3"
+    monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
+
+    create_session_record(
+        root=root,
+        source_key="Summary - Topic_05-10-26",
+        label="Topic",
+        date="05-10-26",
+        mode="audio",
+        folder=root,
+        status="completed",
+        summary_path=summary,
+        transcript_path=transcript,
+        audio_path=audio,
+        completed_at="2026-05-10T12:00:00+00:00",
+    )
+
+    sessions = load_sessions(root, limit=None, include_archived=False)
+    assert sessions
+    assert sessions[0].summary.name == "Summary - Topic 05-10-26.md"
+    assert sessions[0].transcript.name == "Transcript - Topic 05-10-26.txt"
+    assert sessions[0].audio.name == "Audio - Topic 05-10-26.mp3"
+    assert not summary.exists()
+    assert not transcript.exists()
+    assert not audio.exists()
+    assert sessions[0].summary.exists()
+    assert sessions[0].transcript.exists()
+    assert sessions[0].audio.exists()
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT source_key, summary_path, transcript_path, audio_path FROM sessions LIMIT 1"
+        ).fetchone()
+
+    assert row == (
+        "Summary - Topic 05-10-26",
+        str(summary_dir / "Summary - Topic 05-10-26.md"),
+        str(transcript_dir / "Transcript - Topic 05-10-26.txt"),
+        str(audio_dir / "Audio - Topic 05-10-26.mp3"),
+    )
+
+
+def test_session_for_summary_path_recovers_matching_artifacts(tmp_path):
+    root = tmp_path / "Output"
+    summary_dir = root / "SummaryFiles"
+    transcript_dir = root / "TranscriptionFiles"
+    audio_dir = root / "AudioFiles"
+    summary_dir.mkdir(parents=True)
+    transcript_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+
+    summary = summary_dir / "Summary - Topic 05-10-26.md"
+    transcript = transcript_dir / "Transcript - Topic 05-10-26.txt"
+    audio = audio_dir / "Audio - Topic 05-10-26.mp3"
     summary.write_text("summary")
     transcript.write_text("transcript")
     audio.write_text("audio")
@@ -115,7 +173,7 @@ def test_archive_session_toggles_visibility_in_sqlite(tmp_path, monkeypatch):
     root = tmp_path / "Output"
     summary_dir = root / "SummaryFiles"
     summary_dir.mkdir(parents=True)
-    summary = summary_dir / "Summary - Topic_05-10-26.md"
+    summary = summary_dir / "Summary - Topic 05-10-26.md"
     summary.write_text("summary")
 
     db_path = tmp_path / "history.sqlite3"
@@ -144,8 +202,8 @@ def test_archived_and_active_views_are_disjoint(tmp_path, monkeypatch):
     db_path = tmp_path / "history.sqlite3"
     monkeypatch.setattr(session_store, "HISTORY_DB", db_path)
 
-    active_summary = summary_dir / "Summary - Active_05-08-26.md"
-    archived_summary = summary_dir / "Summary - Archived_05-07-26.md"
+    active_summary = summary_dir / "Summary - Active 05-08-26.md"
+    archived_summary = summary_dir / "Summary - Archived 05-07-26.md"
     active_summary.write_text("active")
     archived_summary.write_text("archived")
 
@@ -211,15 +269,15 @@ def test_partial_session_is_saved_before_summary_exists(tmp_path, monkeypatch):
     assert sessions[0].source_path == audio
     assert session_action_specs(sessions[0]) == [("Open Recording", audio)]
 
-    transcript = root / "TranscriptionFiles" / "Transcript_Recording_05-10-26.txt"
+    transcript = root / "TranscriptionFiles" / "Transcript - Recording 05-10-26.txt"
     transcript.parent.mkdir(parents=True)
     transcript.write_text("transcript")
-    summary = root / "SummaryFiles" / "Summary - Recording_05-10-26.md"
+    summary = root / "SummaryFiles" / "Summary - Recording 05-10-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
     update_session_record(
         session_id=session.id,
-        source_key="Summary - Recording_05-10-26",
+        source_key="Summary - Recording 05-10-26",
         label="Recording",
         summary_path=summary,
         transcript_path=transcript,
@@ -248,9 +306,9 @@ def test_initial_history_migration_archives_only_existing_tail_once(tmp_path, mo
     summaries = []
     for idx in range(12):
         day = f"05-{idx + 1:02d}-26"
-        summary = summary_dir / f"Summary - Topic{idx}_{day}.md"
-        transcript = transcript_dir / f"Transcript_Topic{idx}_{day}.txt"
-        audio = audio_dir / f"Audio_Topic{idx}_{day}.mp3"
+        summary = summary_dir / f"Summary - Topic{idx} {day}.md"
+        transcript = transcript_dir / f"Transcript - Topic{idx} {day}.txt"
+        audio = audio_dir / f"Audio - Topic{idx} {day}.mp3"
         summary.write_text(f"summary {idx}")
         transcript.write_text(f"transcript {idx}")
         audio.write_text(f"audio {idx}")
@@ -263,9 +321,9 @@ def test_initial_history_migration_archives_only_existing_tail_once(tmp_path, mo
         archived_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE archived = 1").fetchone()[0]
         assert archived_count == 2
 
-    extra_summary = summary_dir / "Summary - Extra_05-20-26.md"
-    extra_transcript = transcript_dir / "Transcript_Extra_05-20-26.txt"
-    extra_audio = audio_dir / "Audio_Extra_05-20-26.mp3"
+    extra_summary = summary_dir / "Summary - Extra 05-20-26.md"
+    extra_transcript = transcript_dir / "Transcript - Extra 05-20-26.txt"
+    extra_audio = audio_dir / "Audio - Extra 05-20-26.mp3"
     extra_summary.write_text("summary extra")
     extra_transcript.write_text("transcript extra")
     extra_audio.write_text("audio extra")
@@ -292,7 +350,7 @@ def test_partial_sessions_sort_ahead_of_completed_sessions(tmp_path, monkeypatch
         mode="audio",
         folder=root,
         status="completed",
-        summary_path=root / "SummaryFiles" / "Summary - Completed_05-08-26.md",
+        summary_path=root / "SummaryFiles" / "Summary - Completed 05-08-26.md",
         created_at="2026-05-08T20:00:00+00:00",
         completed_at="2026-05-08T20:01:00+00:00",
     )

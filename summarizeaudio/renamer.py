@@ -43,16 +43,16 @@ class Renamer:
 
         audio_dest: Path | None = None
         if mp3_path is not None:
-            audio_dest = self._root / "AudioFiles" / f"Audio_{name}_{today}{suffix}.mp3"
+            audio_dest = self._root / "AudioFiles" / f"Audio - {name} {today}{suffix}.mp3"
             audio_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(mp3_path), audio_dest)
 
-        txt_dest = self._root / "TranscriptionFiles" / f"Transcript_{name}_{today}{suffix}.txt"
+        txt_dest = self._root / "TranscriptionFiles" / f"Transcript - {name} {today}{suffix}.txt"
         if txt_path is not None:
             txt_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(txt_path), txt_dest)
 
-        summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
+        summary_dest = self._root / "SummaryFiles" / f"Summary - {name} {today}{suffix}.md"
         summary_dest.parent.mkdir(parents=True, exist_ok=True)
 
         return SessionPaths(audio=audio_dest, transcript=txt_dest, summary=summary_dest)
@@ -61,16 +61,16 @@ class Renamer:
         """Copy source text to TranscriptionFiles without moving the original."""
         today = _today()
         suffix = _find_collision_suffix(name, today, self._root, has_audio=False)
-        txt_dest = self._root / "TranscriptionFiles" / f"Transcript_{name}_{today}{suffix}.txt"
+        txt_dest = self._root / "TranscriptionFiles" / f"Transcript - {name} {today}{suffix}.txt"
         txt_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(source_txt), txt_dest)
-        summary_dest = self._root / "SummaryFiles" / f"Summary - {name}_{today}{suffix}.md"
+        summary_dest = self._root / "SummaryFiles" / f"Summary - {name} {today}{suffix}.md"
         summary_dest.parent.mkdir(parents=True, exist_ok=True)
         return SessionPaths(audio=None, transcript=txt_dest, summary=summary_dest)
 
     def summary_path(self, name: str) -> Path:
         today = _today()
-        return self._root / "SummaryFiles" / f"Summary - {name}_{today}.md"
+        return self._root / "SummaryFiles" / f"Summary - {name} {today}.md"
 
 
 def _find_collision_suffix(
@@ -84,11 +84,20 @@ def _find_collision_suffix(
     summ_dir = root / "SummaryFiles"
 
     def _collides(sfx: str) -> bool:
-        if has_audio and (audio_dir / f"Audio_{name}_{today}{sfx}.mp3").exists():
+        if has_audio and (
+            (audio_dir / f"Audio - {name} {today}{sfx}.mp3").exists()
+            or (audio_dir / f"Audio_{name}_{today}{sfx}.mp3").exists()
+        ):
             return True
-        if (trans_dir / f"Transcript_{name}_{today}{sfx}.txt").exists():
+        if (
+            (trans_dir / f"Transcript - {name} {today}{sfx}.txt").exists()
+            or (trans_dir / f"Transcript_{name}_{today}{sfx}.txt").exists()
+        ):
             return True
-        if (summ_dir / f"Summary - {name}_{today}{sfx}.md").exists():
+        if (
+            (summ_dir / f"Summary - {name} {today}{sfx}.md").exists()
+            or (summ_dir / f"Summary - {name}_{today}{sfx}.md").exists()
+        ):
             return True
         return False
 

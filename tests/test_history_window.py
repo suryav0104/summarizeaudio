@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from summarizeaudio import history_window
-from summarizeaudio.sessions import SessionFiles
+from summarizeaudio.sessions import SessionFiles, display_session_label
 
 
 class FakeFrame:
@@ -138,9 +138,9 @@ class FakeStyle:
 
 
 def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
-    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
-    transcript = tmp_path / "TranscriptionFiles" / "Transcript_Topic_05-08-26.txt"
-    audio = tmp_path / "AudioFiles" / "Audio_Topic_05-08-26.mp3"
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic 05-08-26.md"
+    transcript = tmp_path / "TranscriptionFiles" / "Transcript - Topic 05-08-26.txt"
+    audio = tmp_path / "AudioFiles" / "Audio - Topic 05-08-26.mp3"
     summary.parent.mkdir(parents=True)
     transcript.parent.mkdir(parents=True)
     audio.parent.mkdir(parents=True)
@@ -189,14 +189,17 @@ def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     assert button_texts == ["Open Summary", "Open Transcript", "Open Recording", "Archive", "Close"]
     assert not any(label.kwargs.get("text") == "Sessions" for label in FakeLabel.instances)
     assert any(label.kwargs.get("text") == "Date: 05-08-26" for label in FakeLabel.instances)
+    assert any(label.kwargs.get("text") == "Summary: Summary - Topic 05-08-26.md" for label in FakeLabel.instances)
+    assert any(label.kwargs.get("text") == "Recording: Audio - Topic 05-08-26.mp3" for label in FakeLabel.instances)
+    assert any(label.kwargs.get("text") == "Transcript: Transcript - Topic 05-08-26.txt" for label in FakeLabel.instances)
     location_label = next(label for label in FakeLabel.instances if label.kwargs.get("text") == str(summary.parent))
     assert "<Button-1>" in location_label.binds
 
 
 def test_history_window_renders_unarchive_for_archived_session(tmp_path, monkeypatch):
-    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
-    transcript = tmp_path / "TranscriptionFiles" / "Transcript_Topic_05-08-26.txt"
-    audio = tmp_path / "AudioFiles" / "Audio_Topic_05-08-26.mp3"
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic 05-08-26.md"
+    transcript = tmp_path / "TranscriptionFiles" / "Transcript - Topic 05-08-26.txt"
+    audio = tmp_path / "AudioFiles" / "Audio - Topic 05-08-26.mp3"
     summary.parent.mkdir(parents=True)
     transcript.parent.mkdir(parents=True)
     audio.parent.mkdir(parents=True)
@@ -246,8 +249,8 @@ def test_history_window_renders_unarchive_for_archived_session(tmp_path, monkeyp
 
 
 def test_history_window_renders_retry_actions_for_partial_sessions(tmp_path, monkeypatch):
-    recording = tmp_path / "AudioFiles" / "Audio_Recording_05-08-26.mp3"
-    transcript = tmp_path / "TranscriptionFiles" / "Transcript_Recording_05-08-26.txt"
+    recording = tmp_path / "AudioFiles" / "Audio - Recording 05-08-26.mp3"
+    transcript = tmp_path / "TranscriptionFiles" / "Transcript - Recording 05-08-26.txt"
     recording.parent.mkdir(parents=True)
     transcript.parent.mkdir(parents=True)
     recording.write_text("audio")
@@ -353,7 +356,7 @@ def test_retry_launch_refreshes_history_when_workflow_exits(monkeypatch, tmp_pat
 
 
 def test_history_window_omits_missing_actions(tmp_path):
-    summary = tmp_path / "SummaryFiles" / "Summary - Notes_05-08-26.md"
+    summary = tmp_path / "SummaryFiles" / "Summary - Notes 05-08-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
 
@@ -372,7 +375,7 @@ def test_history_window_omits_missing_actions(tmp_path):
 
 
 def test_history_window_renders_date_column(tmp_path, monkeypatch):
-    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic 05-08-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
 
@@ -463,7 +466,7 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
     assert FakeTreeview.instances[0].kwargs["show"] == "headings"
     assert FakeTreeview.instances[0].kwargs["height"] == 12
-    assert FakeTreeview.instances[0].items == [("0", "", ("Topic (05-08-26)", "05-08-26"), ("row_even",))]
+    assert FakeTreeview.instances[0].items == [("0", "", ("  Topic", "  05-08-26"), ("row_even",))]
     assert FakeTreeview.instances[0].heading_calls[0][1]["text"] == "Session"
     assert FakeTreeview.instances[0].heading_calls[0][1]["anchor"] == "w"
     assert FakeTreeview.instances[0].heading_calls[1][1]["text"] == "Date"
@@ -471,15 +474,21 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
     assert FakeTreeview.instances[0]._tag_config["row_even"]["background"] == "#ffffff"
     assert FakeTreeview.instances[0]._tag_config["row_odd"]["background"] == "#f8faff"
     assert any(label.kwargs.get("text") == "Date: 05-08-26" for label in FakeLabel.instances)
+    assert any(label.kwargs.get("text") == "Summary: Summary - Topic 05-08-26.md" for label in FakeLabel.instances)
     assert FakeTreeview.instances[0]._selection == ("0",)
     assert FakeTreeview.instances[0]._focus == "0"
     assert FakeTreeview.instances[0]._seen == "0"
 
 
+def test_display_session_label_strips_date_suffix():
+    assert display_session_label("Oh no (05-08-26)") == "Oh no"
+    assert display_session_label("Plain Label") == "Plain Label"
+
+
 def test_history_window_marks_partial_and_failed_sessions(tmp_path, monkeypatch):
-    summary_a = tmp_path / "SummaryFiles" / "Summary - Partial_05-08-26.md"
-    summary_b = tmp_path / "SummaryFiles" / "Summary - Failed_05-07-26.md"
-    summary_c = tmp_path / "SummaryFiles" / "Summary - Done_05-06-26.md"
+    summary_a = tmp_path / "SummaryFiles" / "Summary - Partial 05-08-26.md"
+    summary_b = tmp_path / "SummaryFiles" / "Summary - Failed 05-07-26.md"
+    summary_c = tmp_path / "SummaryFiles" / "Summary - Done 05-06-26.md"
     summary_a.parent.mkdir(parents=True)
     summary_a.write_text("summary a")
     summary_b.write_text("summary b")
@@ -592,14 +601,14 @@ def test_history_window_marks_partial_and_failed_sessions(tmp_path, monkeypatch)
     window._render()
 
     assert FakeTreeview.instances[0].items == [
-        ("0", "", ("* Partial (05-08-26)", "05-08-26"), ("row_even",)),
-        ("1", "", ("* Failed (05-07-26)", "05-07-26"), ("row_odd",)),
-        ("2", "", ("Done (05-06-26)", "05-06-26"), ("row_even",)),
+        ("0", "", ("* Partial", "  05-08-26"), ("row_even",)),
+        ("1", "", ("* Failed", "  05-07-26"), ("row_odd",)),
+        ("2", "", ("  Done", "  05-06-26"), ("row_even",)),
     ]
 
 
 def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monkeypatch):
-    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic 05-08-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
 
@@ -696,8 +705,8 @@ def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monke
 
 
 def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkeypatch):
-    active_summary = tmp_path / "SummaryFiles" / "Summary - Active_05-10-26.md"
-    archived_summary = tmp_path / "SummaryFiles" / "Summary - Archived_05-08-26.md"
+    active_summary = tmp_path / "SummaryFiles" / "Summary - Active 05-10-26.md"
+    archived_summary = tmp_path / "SummaryFiles" / "Summary - Archived 05-08-26.md"
     active_summary.parent.mkdir(parents=True)
     archived_summary.parent.mkdir(parents=True, exist_ok=True)
     active_summary.write_text("active")
@@ -810,7 +819,7 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
     assert FakeTreeview.instances[0].kwargs["height"] == 12
-    assert FakeTreeview.instances[0].items == [("0", "", ("Active (05-10-26)", "05-10-26"), ("row_even",))]
+    assert FakeTreeview.instances[0].items == [("0", "", ("  Active", "  05-10-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Archived Sessions" for btn in FakeButton.instances)
 
     FakeTreeview.instances.clear()
@@ -821,12 +830,12 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
     assert FakeTreeview.instances[0].kwargs["height"] == 12
-    assert FakeTreeview.instances[0].items == [("0", "", ("Archived (05-08-26)", "05-08-26"), ("row_even",))]
+    assert FakeTreeview.instances[0].items == [("0", "", ("  Archived", "  05-08-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Active Sessions" for btn in FakeButton.instances)
 
 
 def test_history_window_close_button_is_right_aligned(tmp_path, monkeypatch):
-    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic 05-08-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
 

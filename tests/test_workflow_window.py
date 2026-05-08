@@ -458,11 +458,11 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     summary_dir.mkdir(parents=True)
     transcript_dir.mkdir(parents=True)
     audio_dir.mkdir(parents=True)
-    summary_path = summary_dir / "Summary - Topic_05-08-26.md"
+    summary_path = summary_dir / "Summary - Topic 05-08-26.md"
     summary_path.write_text("summary content", encoding="utf-8")
-    transcript_path = transcript_dir / "Transcript_Topic_05-08-26.txt"
+    transcript_path = transcript_dir / "Transcript - Topic 05-08-26.txt"
     transcript_path.write_text("transcript content", encoding="utf-8")
-    audio_path = audio_dir / "Audio_Topic_05-08-26.mp3"
+    audio_path = audio_dir / "Audio - Topic 05-08-26.mp3"
     audio_path.write_text("audio content", encoding="utf-8")
     window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
     window._summary_path = summary_path
@@ -660,8 +660,8 @@ def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, m
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
 
     summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
-    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript_Topic.txt"
-    audio_path = tmp_path / "AudioFiles" / "Audio_Topic.mp3"
+    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript - Topic.txt"
+    audio_path = tmp_path / "AudioFiles" / "Audio - Topic.mp3"
     summary_path.parent.mkdir(parents=True)
     transcript_path.parent.mkdir(parents=True)
     audio_path.parent.mkdir(parents=True)
@@ -735,8 +735,8 @@ def test_workflow_window_summary_action_specs_include_available_files(tmp_path, 
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
 
     summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
-    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript_Topic.txt"
-    audio_path = tmp_path / "AudioFiles" / "Audio_Topic.mp3"
+    transcript_path = tmp_path / "TranscriptionFiles" / "Transcript - Topic.txt"
+    audio_path = tmp_path / "AudioFiles" / "Audio - Topic.mp3"
     summary_path.parent.mkdir(parents=True)
     transcript_path.parent.mkdir(parents=True)
     audio_path.parent.mkdir(parents=True)
