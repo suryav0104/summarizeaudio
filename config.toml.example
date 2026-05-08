@@ -7,7 +7,7 @@ language = "en"     # set to "auto" for auto-detect
 
 [ollama]
 host = "http://localhost:11434"
-model = "gemma3:4b"
+model = "gemma3:4b"  # tray menu can switch between gemma3:4b and gemma3:12b
 
 [summarization]
 default_prompt = """

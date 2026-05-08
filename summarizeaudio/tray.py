@@ -13,7 +13,7 @@ from pathlib import Path
 import pystray
 from PIL import Image
 
-from summarizeaudio.config import load_config
+from summarizeaudio.config import load_config, save_config
 from summarizeaudio.error_handler import format_error, post_error
 from summarizeaudio.namer import Namer, default_name
 from summarizeaudio.notifier import notify
@@ -132,6 +132,12 @@ class TrayApp:
         if self._pipeline_running.is_set():
             return
         self._ui_queue.put_nowait(("local_text_flow",))
+
+    def _on_quality_fast(self, icon, item) -> None:
+        self._set_model("gemma3:4b", "Fast (4B)")
+
+    def _on_quality_high(self, icon, item) -> None:
+        self._set_model("gemma3:12b", "High Quality (12B)")
 
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
@@ -266,6 +272,12 @@ class TrayApp:
                 os.startfile(str(path))
             root.destroy()
 
+    def _set_model(self, model: str, label: str) -> None:
+        self._cfg.ollama.model = model
+        save_config(self._cfg)
+        notify(f"Summarization model set to {label}.")
+        self._rebuild_menu()
+
     def _run_local_audio_flow(self) -> None:
         if sys.platform == "darwin":
             rc, path_str = _osascript(
@@ -382,6 +394,7 @@ class TrayApp:
             return
         recording = self._recorder is not None
         processing = self._pipeline_running.is_set()
+        current_model = self._cfg.ollama.model
         items = []
         if recording:
             items.append(pystray.MenuItem("Stop Recording", self._on_stop_recording))
@@ -391,6 +404,15 @@ class TrayApp:
                 "Transcribe & Summarize Audio File…", self._on_local_audio))
             items.append(pystray.MenuItem(
                 "Summarize Text File…", self._on_local_text))
+            items.append(pystray.Menu.SEPARATOR)
+            items.append(pystray.MenuItem("Summarization Model", None, enabled=False))
+            items.append(pystray.MenuItem(
+                f"Current Model: {current_model}",
+                None,
+                enabled=False,
+            ))
+            items.append(pystray.MenuItem("Fast Mode (gemma3:4b)", self._on_quality_fast))
+            items.append(pystray.MenuItem("High Quality Mode (gemma3:12b)", self._on_quality_high))
         else:
             items.append(pystray.MenuItem("Processing…", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)

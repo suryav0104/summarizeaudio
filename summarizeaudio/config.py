@@ -40,6 +40,10 @@ def _toml_multiline_literal(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
 
+def _toml_basic_string(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _select_model_for_ram() -> str:
     """Return the recommended Ollama model based on available system RAM."""
     try:
@@ -192,6 +196,36 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
         recording=RecordingConfig(
             input_device=rec.get("input_device") or None,
         ),
+    )
+
+
+def save_config(cfg: AppConfig) -> None:
+    """Persist the current config back to CONFIG_PATH."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(
+        f"""\
+[storage]
+output_folder = "{_toml_basic_string(str(cfg.storage.output_folder))}"
+
+[whisper]
+model = "{_toml_basic_string(cfg.whisper.model)}"
+language = "{_toml_basic_string(cfg.whisper.language)}"
+
+[ollama]
+host = "{_toml_basic_string(cfg.ollama.host)}"
+model = "{_toml_basic_string(cfg.ollama.model)}"
+
+[summarization]
+default_prompt = \"\"\"{_toml_multiline_literal(cfg.summarization.default_prompt)}\"\"\"
+
+[behavior]
+show_override_dialog = {"true" if cfg.behavior.show_override_dialog else "false"}
+auto_open_summary = {"true" if cfg.behavior.auto_open_summary else "false"}
+
+[recording]
+input_device = "{_toml_basic_string(cfg.recording.input_device or "")}"
+""",
+        encoding="utf-8",
     )
 
 

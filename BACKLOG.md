@@ -3,14 +3,12 @@
 Ranked from highest to lowest impact.
 
 ## 1. Tighten the summarization prompt and output constraints
-- Add a stricter prompt template with a required structure.
-- Reduce verbosity and force more specific bullets.
-- Add anti-hallucination instructions and a stronger instruction hierarchy.
+- Done. The prompt is now stricter, more explicit, and mirrored into the installer and example config.
+- Keep an eye on real-world outputs and refine further if users still report weak summaries.
 
 ## 2. Add a quality mode and model selection UI
-- Expose model choice in the app instead of only config files.
-- Add a fast vs high-quality toggle.
-- Prefer a stronger model when hardware allows it.
+- Done. The tray menu now exposes fast/high model choices and persists the selection.
+- Revisit if you want a third "auto" option or a richer settings panel later.
 
 ## 3. Add transcript chunking for long inputs
 - Split long transcripts into chunks before summarizing.

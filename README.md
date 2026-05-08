@@ -73,6 +73,8 @@ Click it to reveal the menu:
 | Record & Summarize | Starts recording from your configured input device. Click again to stop and process. |
 | Transcribe Audio | Opens a file picker — choose an audio file to transcribe and summarize. |
 | Summarize Text | Opens a file picker — choose a `.txt` or `.md` transcript to summarize. |
+| Use Fast Model | Switches summarization to the faster `gemma3:4b` model. |
+| Use High Quality Model | Switches summarization to the stronger `gemma3:12b` model. |
 | Quit | Closes the app and removes the icon from the menu bar. |
 
 While the app is working (transcribing or summarizing), the icon changes to indicate it is busy. When the summary is ready, a notification appears and the `.md` file opens automatically (if `auto_open_summary = true` in config).
@@ -103,7 +105,7 @@ The config file is at `~/.summarizeaudio/config.toml`. Key options:
 
 ```toml
 [ollama]
-model = "gemma3:4b"       # AI model to use; installers may choose gemma3:12b on machines with more than 8 GB RAM
+model = "gemma3:4b"       # AI model to use; the tray menu can switch between 4b and 12b
 
 [whisper]
 model = "base"            # Whisper model size: tiny, base, small, medium, large

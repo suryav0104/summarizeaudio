@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from summarizeaudio.config import (
     load_config,
+    save_config,
     AppConfig,
     CONFIG_PATH,
     DEFAULT_TOML,
@@ -41,6 +42,20 @@ def test_default_prompt_is_strict_and_structured():
     assert "**Key Points:**" in DEFAULT_SUMMARIZATION_PROMPT
     assert "**Decisions / Action Items:**" in DEFAULT_SUMMARIZATION_PROMPT
     assert "**Notable Details:**" in DEFAULT_SUMMARIZATION_PROMPT
+
+
+def test_save_config_persists_model_choice(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(DEFAULT_TOML)
+    monkeypatch.setattr("summarizeaudio.config.CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("summarizeaudio.config.CONFIG_DIR", tmp_path)
+
+    cfg = load_config()
+    cfg.ollama.model = "gemma3:12b"
+    save_config(cfg)
+
+    reloaded = load_config()
+    assert reloaded.ollama.model == "gemma3:12b"
 
 
 def test_invalid_whisper_model_falls_back_to_base(tmp_path, monkeypatch):
