@@ -9,9 +9,11 @@ from summarizeaudio.sessions import SessionFiles
 class FakeFrame:
     def __init__(self, *args, **kwargs):
         self.children = []
+        self.kwargs = kwargs
+        self.pack_calls = []
 
     def pack(self, *args, **kwargs):
-        pass
+        self.pack_calls.append((args, kwargs))
 
     def winfo_children(self):
         return self.children
@@ -351,11 +353,14 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
 
     window = history_window.HistoryWindow()
     window._render()
-    assert FakeTreeview.instances[0].kwargs["columns"] == ("date",)
-    assert FakeTreeview.instances[0].items == [("0", "Topic (05-08-26)", ("05-08-26",), ("row_even",))]
+    assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
+    assert FakeTreeview.instances[0].kwargs["show"] == "headings"
+    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].items == [("0", "", ("Topic (05-08-26)", "05-08-26"), ("row_even",))]
     assert FakeTreeview.instances[0].heading_calls[0][1]["text"] == "Session"
     assert FakeTreeview.instances[0].heading_calls[0][1]["anchor"] == "w"
     assert FakeTreeview.instances[0].heading_calls[1][1]["text"] == "Date"
+    assert FakeTreeview.instances[0].heading_calls[1][1]["anchor"] == "w"
     assert FakeTreeview.instances[0]._tag_config["row_even"]["background"] == "#ffffff"
     assert FakeTreeview.instances[0]._tag_config["row_odd"]["background"] == "#f8faff"
     assert any(label.kwargs.get("text") == "Date: 05-08-26" for label in FakeLabel.instances)
@@ -456,9 +461,9 @@ def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monke
     history_window.HistoryWindow()
 
     style = FakeStyle.instances[0]
-    assert style.configs["SummarizeAudio.Treeview.Heading"]["padding"] == (34, 10, 14, 10)
+    assert style.configs["SummarizeAudio.Treeview.Heading"]["padding"] == (12, 10, 14, 10)
     assert style.configs["SummarizeAudio.Treeview.Heading"]["foreground"] == "#000000"
-    assert style.maps["SummarizeAudio.Treeview"]["background"] == [("selected", "#e4e7ec")]
+    assert style.maps["SummarizeAudio.Treeview"]["background"] == [("selected", "#cbd2dd")]
 
 
 def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkeypatch):
@@ -574,7 +579,9 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     window._render()
 
     assert len(FakeTreeview.instances) == 1
-    assert FakeTreeview.instances[0].items == [("0", "Active (05-10-26)", ("05-10-26",), ("row_even",))]
+    assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
+    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].items == [("0", "", ("Active (05-10-26)", "05-10-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Archive" for btn in FakeButton.instances)
 
     FakeTreeview.instances.clear()
@@ -583,7 +590,9 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     window._toggle_archived_filter()
 
     assert len(FakeTreeview.instances) == 1
-    assert FakeTreeview.instances[0].items == [("0", "Archived (05-08-26)", ("05-08-26",), ("row_even",))]
+    assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
+    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].items == [("0", "", ("Archived (05-08-26)", "05-08-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Active" for btn in FakeButton.instances)
 
 

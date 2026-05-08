@@ -63,13 +63,13 @@ class HistoryWindow:
         style.configure(
             "SummarizeAudio.Treeview.Heading",
             font=("Helvetica Neue", 14, "bold"),
-            padding=(34, 10, 14, 10),
+            padding=(12, 10, 14, 10),
             background="#f5f7fb",
             foreground="#000000",
         )
         style.map(
             "SummarizeAudio.Treeview",
-            background=[("selected", "#e4e7ec")],
+            background=[("selected", "#cbd2dd")],
             foreground=[("selected", "#162033")],
         )
         style.configure("Link.TLabel", background="white", foreground="#2e72ff")
@@ -197,27 +197,27 @@ class HistoryWindow:
             return
 
         list_shell = ttk.Frame(body, style="Card.TFrame")
-        list_shell.pack(fill="both", expand=True, pady=(0, 16))
+        list_shell.pack(fill="both", expand=True, pady=(0, 22))
         self._session_scrollbar = ttk.Scrollbar(list_shell, orient="vertical")
         self._session_list = ttk.Treeview(
             list_shell,
-            columns=("date",),
-            show="tree headings",
+            columns=("session", "date"),
+            show="headings",
             selectmode="browse",
             style="SummarizeAudio.Treeview",
-            height=10,
+            height=12,
             yscrollcommand=self._session_scrollbar.set,
         )
-        self._session_list.heading("#0", text="Session", anchor="w")
-        self._session_list.heading("date", text="Date", anchor="center")
-        self._session_list.column("#0", width=860, anchor="w", stretch=True)
-        self._session_list.column("date", width=160, anchor="center", stretch=False)
+        self._session_list.heading("session", text="Session", anchor="w")
+        self._session_list.heading("date", text="Date", anchor="w")
+        self._session_list.column("session", width=860, anchor="w", stretch=True)
+        self._session_list.column("date", width=160, anchor="w", stretch=False)
         self._session_scrollbar.configure(command=self._session_list.yview)
         self._session_list.pack(side="left", fill="both", expand=True)
         self._session_scrollbar.pack(side="right", fill="y")
         for index, session in enumerate(self._sessions):
             tags = ("row_even",) if index % 2 == 0 else ("row_odd",)
-            self._session_list.insert("", "end", iid=str(index), text=session.label, values=(session.date,), tags=tags)
+            self._session_list.insert("", "end", iid=str(index), values=(session.label, session.date), tags=tags)
         self._session_list.tag_configure("row_even", background="#ffffff")
         self._session_list.tag_configure("row_odd", background="#f8faff")
         self._session_list.bind("<<TreeviewSelect>>", self._on_select)
@@ -286,7 +286,7 @@ class HistoryWindow:
         location.bind("<Leave>", lambda _event: location.configure(foreground="#2e72ff"))
 
         details = ttk.Frame(self._detail_card, style="Card.TFrame")
-        details.pack(fill="x", pady=(0, 16))
+        details.pack(fill="x", pady=(0, 18))
         ttk.Label(details, text=f"Summary: {session.summary.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
         if session.audio is not None:
             ttk.Label(details, text=f"Recording: {session.audio.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
@@ -294,7 +294,7 @@ class HistoryWindow:
             ttk.Label(details, text=f"Transcript: {session.transcript.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
 
         actions = ttk.Frame(self._detail_card, style="Card.TFrame")
-        actions.pack(fill="x", pady=(8, 0))
+        actions.pack(fill="x", pady=(16, 0))
         specs = session_action_specs(session)
         for idx, (label, path) in enumerate(specs):
             if idx == 0:
