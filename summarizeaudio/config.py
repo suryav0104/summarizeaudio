@@ -19,6 +19,26 @@ LOG_PATH = CONFIG_DIR / "app.log"
 
 VALID_WHISPER_MODELS = {"tiny", "base", "small", "medium", "large"}
 
+DEFAULT_SUMMARIZATION_PROMPT = """You are a precise meeting-note summarizer.
+Output markdown only. Do not add an introduction, conclusion, apology, or commentary outside the sections below.
+
+Use only facts stated in the transcript. Do not invent details, infer intent, or restate the same point in multiple sections.
+Prefer short, specific bullets over paragraphs. If a section has nothing useful to add, omit that section.
+
+Section guidance:
+- **Key Points:** 3-6 bullets covering the main topics, themes, and outcomes.
+- **Decisions / Action Items:** every decision, owner, deadline, and follow-up.
+- **Notable Details:** only concrete supporting details that matter later, such as risks, blockers, dates, or clarifications.
+
+Transcript:
+{transcript}
+"""
+
+
+def _toml_multiline_literal(text: str) -> str:
+    """Escape braces so the prompt can be embedded in an f-string TOML blob."""
+    return text.replace("{", "{{").replace("}", "}}")
+
 
 def _select_model_for_ram() -> str:
     """Return the recommended Ollama model based on available system RAM."""
@@ -60,15 +80,7 @@ host = "http://localhost:11434"
 model = "{model}"
 
 [summarization]
-default_prompt = \"\"\"You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
-
-Summarize the transcript below. Structure the output as:
-- **Key Points:** the main ideas or topics covered
-- **Decisions / Action Items:** anything decided or that requires follow-up (omit section if none)
-- **Notable Details:** anything else worth remembering
-
-Transcript:
-{{transcript}}\"\"\"
+default_prompt = \"\"\"{_toml_multiline_literal(DEFAULT_SUMMARIZATION_PROMPT)}\"\"\"
 
 [behavior]
 show_override_dialog = true
@@ -171,7 +183,7 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
             model=ollama_raw.get("model", "gemma3:4b"),
         ),
         summarization=SummarizationConfig(
-            default_prompt=summ.get("default_prompt", "Summarize:\n{transcript}"),
+            default_prompt=summ.get("default_prompt", DEFAULT_SUMMARIZATION_PROMPT),
         ),
         behavior=BehaviorConfig(
             show_override_dialog=beh.get("show_override_dialog", True),

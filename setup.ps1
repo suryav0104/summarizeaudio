@@ -131,12 +131,16 @@ host = "http://localhost:11434"
 model = "$OllamaModel"
 
 [summarization]
-default_prompt = """You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
+default_prompt = """You are a precise meeting-note summarizer.
+Output markdown only. Do not add an introduction, conclusion, apology, or commentary outside the sections below.
 
-Summarize the transcript below. Structure the output as:
-- **Key Points:** the main ideas or topics covered
-- **Decisions / Action Items:** anything decided or that requires follow-up (omit section if none)
-- **Notable Details:** anything else worth remembering
+Use only facts stated in the transcript. Do not invent details, infer intent, or restate the same point in multiple sections.
+Prefer short, specific bullets over paragraphs. If a section has nothing useful to add, omit that section.
+
+Section guidance:
+- **Key Points:** 3-6 bullets covering the main topics, themes, and outcomes.
+- **Decisions / Action Items:** every decision, owner, deadline, and follow-up.
+- **Notable Details:** only concrete supporting details that matter later, such as risks, blockers, dates, or clarifications.
 
 Transcript:
 {transcript}"""
@@ -144,6 +148,11 @@ Transcript:
 [behavior]
 show_override_dialog = true
 auto_open_summary = false
+
+[recording]
+# Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
+# Set to an exact device name to override, e.g. "Voice + System Audio" for an Aggregate Device.
+input_device = ""
 "@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Success "Config written"
 } else {

@@ -8,9 +8,25 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-OLLAMA_MODEL="gemma3:4b"
 INSTALL_DIR="$HOME/Applications/SummarizeAudio"
 REPO_URL="https://github.com/suryav0104/summarizeaudio.git"
+
+select_model_for_ram() {
+    local ram_bytes
+    if [[ "$(uname)" == "Darwin" ]]; then
+        ram_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+    else
+        ram_bytes=0
+    fi
+
+    if [[ "$ram_bytes" =~ ^[0-9]+$ ]] && [[ "$ram_bytes" -gt $((8 * 1024 * 1024 * 1024)) ]]; then
+        echo "gemma3:12b"
+    else
+        echo "gemma3:4b"
+    fi
+}
+
+OLLAMA_MODEL="$(select_model_for_ram)"
 
 # Detect whether we're running via curl-pipe (no BASH_SOURCE) or local clone
 if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "bash" ]]; then
@@ -142,12 +158,16 @@ host = "http://localhost:11434"
 model = "$OLLAMA_MODEL"
 
 [summarization]
-default_prompt = """You are a summarization engine. Output ONLY the summary — no preamble, no commentary about the transcript, no meta-remarks. Begin directly with the summary content.
+default_prompt = """You are a precise meeting-note summarizer.
+Output markdown only. Do not add an introduction, conclusion, apology, or commentary outside the sections below.
 
-Summarize the transcript below. Structure the output as:
-- **Key Points:** the main ideas or topics covered
-- **Decisions / Action Items:** anything decided or that requires follow-up (omit section if none)
-- **Notable Details:** anything else worth remembering
+Use only facts stated in the transcript. Do not invent details, infer intent, or restate the same point in multiple sections.
+Prefer short, specific bullets over paragraphs. If a section has nothing useful to add, omit that section.
+
+Section guidance:
+- **Key Points:** 3-6 bullets covering the main topics, themes, and outcomes.
+- **Decisions / Action Items:** every decision, owner, deadline, and follow-up.
+- **Notable Details:** only concrete supporting details that matter later, such as risks, blockers, dates, or clarifications.
 
 Transcript:
 {transcript}"""
@@ -155,6 +175,11 @@ Transcript:
 [behavior]
 show_override_dialog = true
 auto_open_summary = false
+
+[recording]
+# Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
+# Set to an exact device name to override, e.g. "Voice + System Audio" for an Aggregate Device.
+input_device = ""
 TOML
     success "Config written to $CONFIG_FILE"
 else
@@ -178,7 +203,7 @@ echo "  HOW TO USE"
 echo "  Click the menu bar icon to see options:"
 echo "    • Record & Summarize  — record from microphone"
 echo "    • Transcribe Audio    — pick an existing audio file"
-echo "    • Summarize Text      — pick an existing text file"
+echo "    • Summarize Text      — pick an existing text file (.txt or .md)"
 echo ""
 echo "  WHERE YOUR FILES ARE SAVED"
 echo "    $SCRIPT_DIR/AudioSummaries/"

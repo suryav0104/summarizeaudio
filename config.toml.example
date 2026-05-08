@@ -1,5 +1,5 @@
 [storage]
-output_folder = "~/AudioSummaries"
+output_folder = "~/Applications/SummarizeAudio/AudioSummaries"
 
 [whisper]
 model = "base"      # tiny | base | small | medium | large
@@ -7,12 +7,20 @@ language = "en"     # set to "auto" for auto-detect
 
 [ollama]
 host = "http://localhost:11434"
-model = "mistral-small3.2:24b"
+model = "gemma3:4b"
 
 [summarization]
 default_prompt = """
-You are a helpful assistant. Summarize the following transcript concisely.
-Highlight key decisions, action items, and important points.
+You are a precise meeting-note summarizer.
+Output markdown only. Do not add an introduction, conclusion, apology, or commentary outside the sections below.
+
+Use only facts stated in the transcript. Do not invent details, infer intent, or restate the same point in multiple sections.
+Prefer short, specific bullets over paragraphs. If a section has nothing useful to add, omit that section.
+
+Section guidance:
+- **Key Points:** 3-6 bullets covering the main topics, themes, and outcomes.
+- **Decisions / Action Items:** every decision, owner, deadline, and follow-up.
+- **Notable Details:** only concrete supporting details that matter later, such as risks, blockers, dates, or clarifications.
 
 Transcript:
 {transcript}
@@ -21,3 +29,8 @@ Transcript:
 [behavior]
 show_override_dialog = true
 auto_open_summary = false
+
+[recording]
+# Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
+# Set to an exact device name to override, e.g. "Voice + System Audio" for an Aggregate Device.
+input_device = ""

@@ -5,7 +5,13 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
-from summarizeaudio.config import load_config, AppConfig, CONFIG_PATH, DEFAULT_TOML
+from summarizeaudio.config import (
+    load_config,
+    AppConfig,
+    CONFIG_PATH,
+    DEFAULT_TOML,
+    DEFAULT_SUMMARIZATION_PROMPT,
+)
 
 
 def test_creates_default_config_on_first_run(tmp_path, monkeypatch):
@@ -26,6 +32,15 @@ def test_loads_valid_config(tmp_path, monkeypatch):
     assert cfg.whisper.model == "base"
     assert cfg.ollama.model == "gemma3:4b"
     assert cfg.behavior.show_override_dialog is True
+
+
+def test_default_prompt_is_strict_and_structured():
+    assert "precise meeting-note summarizer" in DEFAULT_SUMMARIZATION_PROMPT
+    assert "Output markdown only" in DEFAULT_SUMMARIZATION_PROMPT
+    assert "Do not invent details" in DEFAULT_SUMMARIZATION_PROMPT
+    assert "**Key Points:**" in DEFAULT_SUMMARIZATION_PROMPT
+    assert "**Decisions / Action Items:**" in DEFAULT_SUMMARIZATION_PROMPT
+    assert "**Notable Details:**" in DEFAULT_SUMMARIZATION_PROMPT
 
 
 def test_invalid_whisper_model_falls_back_to_base(tmp_path, monkeypatch):
