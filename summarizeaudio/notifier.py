@@ -14,11 +14,17 @@ def notify(message: str, title: str = "SummarizeAudio") -> None:
 
 
 def _notify_macos(title: str, message: str) -> None:
-    safe_msg = message.replace('"', '\\"')
-    safe_title = title.replace('"', '\\"')
-    script = f'display notification "{safe_msg}" with title "{safe_title}"'
     try:
-        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "summarizeaudio.alert_window", "--title", title],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        if proc.stdin is not None:
+            proc.stdin.write(message)
+            proc.stdin.close()
     except Exception:
         _notify_plyer(title, message)
 

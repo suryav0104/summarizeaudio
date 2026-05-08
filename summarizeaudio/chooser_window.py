@@ -144,8 +144,8 @@ def main(argv: list[str] | None = None) -> int:
 
     buttons = ttk.Frame(card)
     buttons.pack(fill="x", padx=22, pady=(0, 18))
-    ttk.Button(buttons, text="Cancel", command=close).pack(side="right")
-    ttk.Button(buttons, text="Choose File", command=choose).pack(side="right", padx=(0, 8))
+    ttk.Button(buttons, text="Choose File", command=choose).pack(side="left")
+    ttk.Button(buttons, text="Cancel", command=close).pack(side="left", padx=(8, 0))
 
     root.protocol("WM_DELETE_WINDOW", close)
     root.deiconify()

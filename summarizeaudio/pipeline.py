@@ -177,6 +177,7 @@ class Pipeline:
                 self._ui_queue.put_nowait(("info_dialog", "Transcription complete.", "No summary file was created."))
                 return
             summary_text = tmp_md.read_text(encoding="utf-8-sig", errors="replace")
+            self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
             final_name = self._request_final_name(_derive_default_name(summary_text, fallback=session_name))
             if final_name is None:
                 return
@@ -277,6 +278,7 @@ class Pipeline:
             return
 
         summary_text = tmp_md.read_text(encoding="utf-8-sig", errors="replace")
+        self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
         final_name = self._request_final_name(_derive_default_name(summary_text, fallback=session_name))
         if final_name is None:
             return

@@ -10,7 +10,6 @@ import sys
 import threading
 import traceback
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 import pystray
@@ -21,35 +20,13 @@ from summarizeaudio.error_handler import format_error
 from summarizeaudio.notifier import notify
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.recorder import Recorder
+from summarizeaudio.sessions import SessionFiles, discover_sessions, session_action_specs
 from summarizeaudio.ui_dispatcher import UIDispatcher
 
 ASSETS = Path(__file__).parent.parent / "assets"
 LOCK_FILE = Path.home() / ".summarizeaudio" / "app.lock"
 EMOJI_ICONS = {"idle": "🎙", "recording": "🔴", "processing": "💭", "error": "⚠️"}
 log = logging.getLogger(__name__)
-_SESSION_SUMMARY_RE = re.compile(
-    r"^Summary - (?P<name>.+?)_(?P<date>\d{2}-\d{2}-\d{2})(?P<suffix>(?:_\d+)?)$"
-)
-
-
-@dataclass(frozen=True)
-class SessionFiles:
-    label: str
-    folder: Path
-    summary: Path
-    transcript: Path | None
-    audio: Path | None
-
-
-def _osascript(script: str) -> tuple[int, str]:
-    """Run an AppleScript snippet; returns (returncode, stdout)."""
-    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    return r.returncode, r.stdout.strip()
-
-
-def _as_safe(s: str) -> str:
-    """Escape a string for embedding inside an AppleScript double-quoted literal."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _load_icon(name: str) -> Image.Image:
@@ -139,6 +116,9 @@ class TrayApp:
     def _on_local_text(self, icon, item) -> None:
         self._launch_workflow("text")
 
+    def _on_history(self, icon, item) -> None:
+        self._launch_history()
+
     def _on_quality_fast(self, icon, item) -> None:
         self._set_model("gemma3:4b", "Fast (4B)")
 
@@ -165,55 +145,20 @@ class TrayApp:
 
     def _on_error(self, component: str, message: str, tb: str) -> None:
         msg = format_error(component, message, tb)
-        if sys.platform == "darwin":
-            safe = _as_safe(msg[:800])
-            _osascript(
-                f'display dialog "{safe}" buttons {{"OK"}} default button "OK" '
-                f'with icon stop with title "SummarizeAudio Error"'
-            )
-        else:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk(); root.withdraw()
-            messagebox.showerror("SummarizeAudio Error", msg)
-            root.destroy()
+        notify(msg, "SummarizeAudio Error")
         self._pipeline_running.clear()
         self._set_icon("idle")
         self._rebuild_menu()
 
     def _on_fatal_error(self, message: str, detail: str) -> None:
         msg = format_error("fatal", message, detail)
-        if sys.platform == "darwin":
-            safe = _as_safe(msg[:800])
-            _osascript(
-                f'display dialog "{safe}" buttons {{"Quit"}} default button "Quit" '
-                f'with icon stop with title "SummarizeAudio — Fatal Error"'
-            )
-        else:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk(); root.withdraw()
-            messagebox.showerror("SummarizeAudio — Fatal Error", msg)
-            root.destroy()
+        notify(msg, "SummarizeAudio — Fatal Error")
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
         self._tray.stop()
 
     def _on_info_dialog(self, title: str, message: str) -> None:
-        if sys.platform == "darwin":
-            safe_title = _as_safe(title[:120])
-            safe_message = _as_safe(message[:800])
-            _osascript(
-                f'display dialog "{safe_message}" buttons {{"OK"}} default button "OK" '
-                f'with icon note with title "{safe_title}"'
-            )
-        else:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo(title, message)
-            root.destroy()
+        notify(message, title)
 
     def _on_override_dialog(self, override, prompt: str) -> None:
         def launch() -> None:
@@ -229,13 +174,7 @@ class TrayApp:
             except Exception as exc:
                 log.exception("Prompt editor helper failed to launch")
                 override._resolve(None)
-                self._ui_queue.put_nowait(
-                    (
-                        "info_dialog",
-                        "Prompt editor could not open.",
-                        f"SummarizeAudio could not show the prompt editor.\n\n{exc}",
-                    )
-                )
+                self._ui_queue.put_nowait(("info_dialog", "Prompt editor could not open.", f"SummarizeAudio could not show the prompt editor.\n\n{exc}"))
                 return
 
             if proc.returncode == 0:
@@ -267,13 +206,7 @@ class TrayApp:
             except Exception as exc:
                 log.exception("Name editor helper failed to launch")
                 name_event._resolve(None)
-                self._ui_queue.put_nowait(
-                    (
-                        "info_dialog",
-                        "Name editor could not open.",
-                        f"SummarizeAudio could not show the name editor.\n\n{exc}",
-                    )
-                )
+                self._ui_queue.put_nowait(("info_dialog", "Name editor could not open.", f"SummarizeAudio could not show the name editor.\n\n{exc}"))
                 return
 
             if proc.returncode == 0:
@@ -292,25 +225,19 @@ class TrayApp:
         except Exception as exc:
             self._on_error("tray.py → workflow", str(exc), traceback.format_exc())
 
+    def _launch_history(self) -> None:
+        cmd = [sys.executable, "-m", "summarizeaudio.history_window"]
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as exc:
+            self._on_error("tray.py → history", str(exc), traceback.format_exc())
+
     def _on_summary_ready(self, path: Path) -> None:
         if sys.platform == "darwin":
-            safe_name = _as_safe(path.name)
-            rc, out = _osascript(
-                f'display dialog "Summary ready:\\n{safe_name}" '
-                f'buttons {{"Dismiss", "Open"}} default button "Open" '
-                f'with title "SummarizeAudio"'
-            )
-            if rc == 0 and "button returned:Open" in out:
-                subprocess.run(["open", str(path)], check=False)
+            subprocess.run(["open", str(path)], check=False)
         else:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            if messagebox.askyesno("SummarizeAudio", f"Summary ready!\n\n{path.name}\n\nOpen it?"):
-                import os
-                os.startfile(str(path))
-            root.destroy()
+            import os
+            os.startfile(str(path))
 
     def _set_model(self, model: str, label: str) -> None:
         self._cfg.ollama.model = model
@@ -349,67 +276,6 @@ class TrayApp:
         except Exception as exc:
             self._on_error("tray.py → open", str(exc), traceback.format_exc())
 
-    def _recent_sessions(self, limit: int = 5) -> list[SessionFiles]:
-        root = self._cfg.storage.output_folder
-        summary_dir = root / "SummaryFiles"
-        if not summary_dir.exists():
-            return []
-
-        candidates = sorted(
-            summary_dir.glob("Summary - *.md"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        sessions: list[SessionFiles] = []
-        for summary in candidates:
-            match = _SESSION_SUMMARY_RE.match(summary.stem)
-            if not match:
-                continue
-            name = match.group("name")
-            date = match.group("date")
-            suffix = match.group("suffix")
-            transcript = root / "TranscriptionFiles" / f"Transcript_{name}_{date}{suffix}.txt"
-            audio = root / "AudioFiles" / f"Audio_{name}_{date}{suffix}.mp3"
-            sessions.append(
-                SessionFiles(
-                    label=f"{name} ({date})",
-                    folder=summary.parent,
-                    summary=summary,
-                    transcript=transcript if transcript.exists() else None,
-                    audio=audio if audio.exists() else None,
-                )
-            )
-            if len(sessions) >= limit:
-                break
-        return sessions
-
-    def _session_action_specs(self, session: SessionFiles) -> list[tuple[str, Path]]:
-        specs = [("Open Summary", session.summary)]
-        if session.transcript is not None:
-            specs.append(("Open Transcript", session.transcript))
-        if session.audio is not None:
-            specs.append(("Open Recording", session.audio))
-        specs.append(("Open Folder", session.folder))
-        return specs
-
-    def _session_actions_pystray(self, session: SessionFiles) -> pystray.Menu:
-        def opener(path: Path):
-            def _callback(_icon, _item) -> None:
-                self._open_path(path)
-
-            return _callback
-
-        items = [pystray.MenuItem(label, opener(path)) for label, path in self._session_action_specs(session)]
-        return pystray.Menu(*items)
-
-    def _session_actions_rumps(self, session: SessionFiles):
-        import rumps
-
-        menu_item = rumps.MenuItem(session.label)
-        for label, path in self._session_action_specs(session):
-            menu_item.add(rumps.MenuItem(label, callback=lambda _item, p=path: self._open_path(p)))
-        return menu_item
-
     def _run_local_audio_flow(self) -> None:
         self._launch_workflow("audio")
 
@@ -443,13 +309,8 @@ class TrayApp:
                 "Transcribe & Summarize Audio File…", self._on_local_audio))
             items.append(pystray.MenuItem(
                 "Summarize Text File…", self._on_local_text))
-            recent_sessions = self._recent_sessions()
-            if recent_sessions:
-                items.append(pystray.Menu.SEPARATOR)
-                items.append(pystray.MenuItem(
-                    "History",
-                    pystray.Menu(*[pystray.MenuItem(session.label, self._session_actions_pystray(session)) for session in recent_sessions]),
-                ))
+            items.append(pystray.Menu.SEPARATOR)
+            items.append(pystray.MenuItem("History…", self._on_history))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Summarization Model", None, enabled=False))
             fast_label = self._model_label("gemma3:4b", "Fast Mode (gemma3:4b)")
@@ -481,13 +342,8 @@ class TrayApp:
                 "Summarize Text File…",
                 callback=lambda _: self._on_local_text(None, None),
             ))
-            recent_sessions = self._recent_sessions()
-            if recent_sessions:
-                items.append(None)
-                recent_root = rumps.MenuItem("History")
-                for session in recent_sessions:
-                    recent_root.add(self._session_actions_rumps(session))
-                items.append(recent_root)
+            items.append(None)
+            items.append(rumps.MenuItem("History…", callback=lambda _: self._on_history(None, None)))
             items.append(None)
             items.append(rumps.MenuItem("Summarization Model"))
             fast_item = rumps.MenuItem(
@@ -599,19 +455,7 @@ def run() -> None:
         app.run()
     except Exception:
         msg = format_error("startup", "SummarizeAudio could not start.", traceback.format_exc())
-        if sys.platform == "darwin":
-            safe = _as_safe(msg[:800])
-            _osascript(
-                f'display dialog "{safe}" buttons {{"Quit"}} default button "Quit" '
-                f'with icon stop with title "SummarizeAudio Error"'
-            )
-        else:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("SummarizeAudio Error", msg)
-            root.destroy()
+        notify(msg, "SummarizeAudio Error")
         raise SystemExit(1)
     finally:
         LOCK_FILE.unlink(missing_ok=True)

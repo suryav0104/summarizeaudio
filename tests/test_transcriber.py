@@ -1,5 +1,7 @@
 # tests/test_transcriber.py
 import queue
+import sys
+import types
 import wave
 from pathlib import Path
 import pytest
@@ -38,3 +40,29 @@ def test_transcriber_nonexistent_file_raises(tmp_path, ui_queue):
     t = Transcriber(model="tiny", language="en", ui_queue=ui_queue)
     with pytest.raises(FileNotFoundError):
         t.transcribe(tmp_path / "nofile.mp3", tmp_path / "out.txt")
+
+
+def test_transcriber_loads_whisper_without_status_notifications(tmp_path, ui_queue, monkeypatch):
+    calls = []
+
+    class FakeWhisperModel:
+        def __init__(self, model_name, device=None, compute_type=None):
+            self.model_name = model_name
+            self.device = device
+            self.compute_type = compute_type
+
+        def transcribe(self, audio_path, language=None):
+            return [types.SimpleNamespace(text="hello world")], types.SimpleNamespace(language="en", duration=1.0)
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+    monkeypatch.setattr("summarizeaudio.transcriber.notify", lambda *args, **kwargs: calls.append((args, kwargs)), raising=False)
+
+    wav = make_silence_wav(tmp_path / "silence.wav")
+    t = Transcriber(model="tiny", language="en", ui_queue=ui_queue)
+    out_txt = tmp_path / "out.txt"
+    t.transcribe(wav, out_txt)
+
+    assert out_txt.read_text(encoding="utf-8") == "hello world"
+    assert calls == []

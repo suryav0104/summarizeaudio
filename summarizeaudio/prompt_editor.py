@@ -107,8 +107,8 @@ def main(argv: list[str] | None = None) -> int:
 
         buttons = ttk.Frame(card)
         buttons.pack(fill="x", pady=(12, 0))
-        tk.Button(buttons, text="Skip", command=cancel, bg="#edf2f9", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="right", padx=(8, 0))
-        tk.Button(buttons, text="Summarize", command=confirm, bg="#2e72ff", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="right")
+        tk.Button(buttons, text="Summarize", command=confirm, bg="#2e72ff", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="left")
+        tk.Button(buttons, text="Skip", command=cancel, bg="#edf2f9", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="left", padx=(8, 0))
 
     else:
         ttk.Label(card, text="Name Output File", style="PromptTitle.TLabel").pack(anchor="w")
@@ -149,8 +149,8 @@ def main(argv: list[str] | None = None) -> int:
 
         buttons = ttk.Frame(card)
         buttons.pack(fill="x", pady=(12, 0))
-        tk.Button(buttons, text="Cancel", command=cancel, bg="#edf2f9", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="right", padx=(8, 0))
-        tk.Button(buttons, text="Save", command=confirm, bg="#2e72ff", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="right")
+        tk.Button(buttons, text="Save", command=confirm, bg="#2e72ff", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="left")
+        tk.Button(buttons, text="Cancel", command=cancel, bg="#edf2f9", fg="#000000", activeforeground="#000000", relief="flat", bd=0, padx=16, pady=10, font=("Helvetica Neue", 13, "bold")).pack(side="left", padx=(8, 0))
 
     root.protocol("WM_DELETE_WINDOW", cancel)
     root.deiconify()

@@ -72,19 +72,21 @@ def test_model_menu_updates_checkmark_after_selection(tmp_path, monkeypatch):
     assert saved[-1] == "gemma3:12b"
 
 
-def test_history_menu_exposes_only_available_actions(tmp_path, monkeypatch):
-    output = tmp_path / "Summaries"
-    summary_dir = output / "SummaryFiles"
-    transcript_dir = output / "TranscriptionFiles"
-    audio_dir = output / "AudioFiles"
-    summary_dir.mkdir(parents=True)
-    transcript_dir.mkdir(parents=True)
-    audio_dir.mkdir(parents=True)
-    summary = summary_dir / "Summary - Team Update_05-08-26.md"
-    summary.write_text("summary")
-    transcript = transcript_dir / "Transcript_Team Update_05-08-26.txt"
-    transcript.write_text("transcript")
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(output, "gemma3:4b"))
+def test_history_menu_launches_popup_window(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
+    launched = []
+    monkeypatch.setattr("summarizeaudio.tray.subprocess.Popen", lambda cmd, stdout=None, stderr=None: launched.append(cmd))
+    app = TrayApp()
+
+    app._on_history(None, None)
+
+    assert launched
+    assert launched[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.history_window"]
+
+
+def test_history_menu_shows_popup_item(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None)
@@ -92,31 +94,7 @@ def test_history_menu_exposes_only_available_actions(tmp_path, monkeypatch):
     app._rebuild_menu()
 
     items = list(app._tray.menu.items)
-    history = next(item for item in items if item.text == "History")
-    assert history.submenu is not None
-    session_item = next(item for item in history.submenu.items if "Team Update" in item.text)
-    actions = list(session_item.submenu.items)
-    assert {item.text for item in actions} == {"Open Summary", "Open Transcript", "Open Folder"}
-
-
-def test_history_menu_summary_only_session_shows_summary_only(tmp_path, monkeypatch):
-    output = tmp_path / "Summaries"
-    summary_dir = output / "SummaryFiles"
-    summary_dir.mkdir(parents=True)
-    summary = summary_dir / "Summary - Notes_05-08-26.md"
-    summary.write_text("summary")
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(output, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    app = TrayApp()
-    app._tray = SimpleNamespace(menu=None)
-
-    app._rebuild_menu()
-
-    items = list(app._tray.menu.items)
-    history = next(item for item in items if item.text == "History")
-    session_item = next(item for item in history.submenu.items if "Notes" in item.text)
-    actions = list(session_item.submenu.items)
-    assert [item.text for item in actions] == ["Open Summary", "Open Folder"]
+    assert any(item.text == "History…" for item in items)
 
 
 def test_rumps_icon_state_uses_emoji_title(tmp_path, monkeypatch):
@@ -131,19 +109,17 @@ def test_rumps_icon_state_uses_emoji_title(tmp_path, monkeypatch):
     assert app._tray.title == "🔴"
 
 
-def test_info_dialog_uses_centered_macos_dialog(tmp_path, monkeypatch):
+def test_info_dialog_uses_centered_popup_window(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    monkeypatch.setattr("summarizeaudio.tray.sys.platform", "darwin")
     calls = []
-    monkeypatch.setattr("summarizeaudio.tray._osascript", lambda script: calls.append(script) or (0, ""))
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": calls.append((title, message)))
     app = TrayApp()
 
     app._on_info_dialog("No usable audio was captured.", "Check your input.")
 
     assert calls
-    assert "display dialog" in calls[0]
-    assert "with icon note" in calls[0]
+    assert calls[0] == ("No usable audio was captured.", "Check your input.")
 
 
 def test_override_dialog_uses_scrollable_editor_and_preserves_full_prompt(tmp_path, monkeypatch):

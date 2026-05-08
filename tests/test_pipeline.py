@@ -66,6 +66,16 @@ def resolve_name_dialog(ui_queue, response="Project Update"):
     return thread
 
 
+class SpyQueue(queue.Queue):
+    def __init__(self):
+        super().__init__()
+        self.recorded = []
+
+    def put_nowait(self, item):
+        self.recorded.append(item)
+        return super().put_nowait(item)
+
+
 def test_mode1_produces_three_output_files(tmp_output, ui_queue, monkeypatch):
     """Pipeline orchestration test — mocks Transcriber to avoid requiring Whisper install."""
     mock_ollama(monkeypatch)
@@ -121,6 +131,40 @@ def test_mode1_default_name_comes_from_summary_topic(tmp_output, ui_queue, monke
     p.run(mode=PipelineMode.RECORD, session_name="TestSession", mp3_path=mp3)
     assert captured["default_name"].startswith("Mobile checkout")
     assert "Key Points" not in captured["default_name"]
+
+
+def test_mode1_posts_summarizing_phase_before_name_dialog(tmp_output, monkeypatch):
+    def fake_summarize(self, transcript_text, out_md):
+        out_md.write_text(
+            "Key Points\n- Mobile checkout drop-off is the main issue.\n- Billing screen is confusing.\n",
+            encoding="utf-8",
+        )
+
+    mock_ollama(monkeypatch)
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+    )
+    monkeypatch.setattr("summarizeaudio.summarizer.Summarizer.summarize", fake_summarize)
+    cfg = make_config(tmp_output)
+    mp3 = make_silence_mp3(tmp_output / "session.mp3")
+    ui_queue = SpyQueue()
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    def worker():
+        while True:
+            item = ui_queue.get(timeout=5)
+            if item[0] == "name_dialog":
+                item[1]._resolve("Project Update")
+                return
+
+    threading.Thread(target=worker, daemon=True).start()
+    p.run(mode=PipelineMode.RECORD, session_name="TestSession", mp3_path=mp3)
+
+    kinds = [item[0] for item in ui_queue.recorded]
+    assert "workflow_phase" in kinds
+    assert "name_dialog" in kinds
+    assert kinds.index("workflow_phase") < kinds.index("name_dialog")
 
 
 def test_mode2_does_not_touch_source_file(tmp_output, ui_queue, monkeypatch):

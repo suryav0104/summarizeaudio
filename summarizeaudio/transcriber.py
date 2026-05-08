@@ -8,7 +8,6 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from summarizeaudio.error_handler import friendly_message, post_error
-from summarizeaudio.notifier import notify
 
 
 class Transcriber:
@@ -33,14 +32,9 @@ class Transcriber:
         if self._model is None:
             cached = self._is_model_cached()
             log.info("Whisper model '%s' cached=%s — loading", self._model_name, cached)
-            if not cached:
-                notify(f"Downloading Whisper '{self._model_name}' model, this may take a few minutes…")
-            else:
-                notify(f"Loading Whisper '{self._model_name}' model…")
             try:
                 self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
                 log.info("Whisper model '%s' loaded", self._model_name)
-                notify("Whisper model ready.")
             except Exception as exc:
                 log.exception("Failed to load Whisper model '%s'", self._model_name)
                 message = friendly_message(

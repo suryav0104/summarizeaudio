@@ -32,6 +32,8 @@ class FakeRoot:
         self.grabbed = False
         self.topmost = False
         self.minsize_value = None
+        self.lift_calls = 0
+        self.focus_calls = 0
 
     def withdraw(self):
         pass
@@ -64,7 +66,7 @@ class FakeRoot:
         return 1080
 
     def lift(self):
-        pass
+        self.lift_calls += 1
 
     def attributes(self, *args):
         if args and args[0] == "-topmost":
@@ -74,7 +76,7 @@ class FakeRoot:
         pass
 
     def focus_force(self):
-        pass
+        self.focus_calls += 1
 
     def grab_set(self):
         self.grabbed = True
@@ -90,10 +92,17 @@ class FakeRoot:
 
 
 class FakeStyle:
+    instances = []
+
+    def __init__(self):
+        self.configured = []
+        FakeStyle.instances.append(self)
+
     def theme_use(self, *args, **kwargs):
         return None
 
     def configure(self, *args, **kwargs):
+        self.configured.append((args, kwargs))
         return None
 
 
@@ -113,12 +122,15 @@ class FakeProgressbar:
 
     def __init__(self, *args, **kwargs):
         self.packed = False
+        self.kwargs = kwargs
+        self.start_args = None
 
     def pack(self, *args, **kwargs):
         self.packed = True
 
     def start(self, *args, **kwargs):
         FakeProgressbar.started += 1
+        self.start_args = args
 
     def stop(self):
         pass
@@ -159,10 +171,12 @@ class FakeButton:
         self.parent = parent
         self.kwargs = kwargs
         self.packed = False
+        self.pack_calls = []
         FakeButton.instances.append(self)
 
     def pack(self, *args, **kwargs):
         self.packed = True
+        self.pack_calls.append(kwargs)
 
 
 class FakeEntry:
@@ -260,12 +274,16 @@ def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    FakeButton.instances.clear()
 
     window = workflow_window.WorkflowWindow("audio")
     window._render_steps = lambda body: None
     window._render_chooser(FakeFrame())
 
     assert window._subtitle.get() == "Select a file to continue."
+    assert [btn.kwargs["text"] for btn in FakeButton.instances[-2:]] == ["Choose File", "Cancel"]
+    assert FakeButton.instances[-2].pack_calls[-1].get("side") == "left"
+    assert FakeButton.instances[-1].pack_calls[-1].get("side") == "left"
 
 
 def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
@@ -283,7 +301,13 @@ def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
     record_window._step_state = "processing"
     record_window._render_processing(FakeFrame())
     assert record_window._status.get() == "Transcribe recording"
-    assert record_window._steps_for_mode() == ["Recording completed", "Transcribe recording", "Summarize transcript", "Name the output"]
+    assert record_window._steps_for_mode() == ["Record audio", "Transcribe recording", "Summarize transcript", "Name the output"]
+
+    record_window._step_state = "summarizing"
+    record_window._render_processing(FakeFrame())
+    assert record_window._status.get() == "Summarize transcript"
+    assert record_window._completed_step_count() == 2
+    assert record_window._current_step_index() == 2
 
     audio_window = workflow_window.WorkflowWindow("audio")
     audio_window._status = FakeStringVar()
@@ -292,12 +316,81 @@ def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
     assert audio_window._status.get() == "Transcribe audio"
     assert audio_window._steps_for_mode() == ["Choose audio file", "Transcribe audio", "Summarize transcript", "Name the output"]
 
+    audio_window._step_state = "summarizing"
+    audio_window._render_processing(FakeFrame())
+    assert audio_window._status.get() == "Summarize transcript"
+    assert audio_window._completed_step_count() == 2
+    assert audio_window._current_step_index() == 2
+
     text_window = workflow_window.WorkflowWindow("text")
     text_window._status = FakeStringVar()
     text_window._step_state = "processing"
     text_window._render_processing(FakeFrame())
     assert text_window._status.get() == "Summarize transcript"
     assert text_window._steps_for_mode() == ["Choose transcript file", "Summarize transcript", "Name the output"]
+
+    text_window._step_state = "summarizing"
+    text_window._render_processing(FakeFrame())
+    assert text_window._status.get() == "Summarize transcript"
+    assert text_window._completed_step_count() == 1
+    assert text_window._current_step_index() == 1
+
+
+def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Progressbar", FakeProgressbar)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    FakeStyle.instances.clear()
+    FakeProgressbar.started = 0
+
+    window = workflow_window.WorkflowWindow("audio")
+    window._state = "processing"
+    window._step_state = "processing"
+    window._render()
+
+    style = FakeStyle.instances[-1]
+    progress_calls = [call for call in style.configured if call[0] == ("Progress.Horizontal.TProgressbar",)]
+    assert progress_calls
+    assert progress_calls[-1][1]["background"] == "#222222"
+    assert progress_calls[-1][1]["thickness"] == 16
+    assert FakeProgressbar.started == 1
+    assert window._progress.start_args == (20,)
+    assert window._progress.kwargs["length"] == 2700
+
+
+def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    FakeText.instances.clear()
+    FakeButton.instances.clear()
+
+    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text("summary content", encoding="utf-8")
+    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
+    window._summary_path = summary_path
+    window._summary_preview = "summary content"
+    window._render_steps = lambda body: None
+    window._render_summary(FakeFrame())
+
+    assert FakeText.instances
+    assert FakeText.instances[-1].kwargs["height"] == 8
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Open Summary", "Close"]
 
 
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
@@ -319,6 +412,80 @@ def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
     assert window._state == "name"
     assert resolved == []
     assert fake_root.destroyed is False
+
+
+def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Entry", FakeEntry)
+    FakeButton.instances.clear()
+    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window._render_steps = lambda body: None
+    window._default_name = "Project Update"
+    body = FakeFrame()
+
+    window._render_name(body)
+
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Save Name", "Cancel"]
+    assert FakeButton.instances[0].pack_calls[-1].get("side") == "left"
+    assert FakeButton.instances[1].pack_calls[-1].get("side") == "left"
+
+
+def test_workflow_window_workflow_phase_sets_summarizing_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    window = workflow_window.WorkflowWindow("audio")
+    render_calls = []
+    raised = []
+    window._render = lambda: render_calls.append((window._state, window._step_state))
+    window._raise_window = lambda: raised.append(True)
+
+    window._handle_item(("workflow_phase", "summarizing"))
+
+    assert window._state == "processing"
+    assert window._step_state == "summarizing"
+    assert render_calls
+    assert raised
+
+
+def test_workflow_window_save_name_keeps_window_visible(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Entry", FakeEntry)
+    FakeButton.instances.clear()
+    raised = []
+    window._raise_window = lambda: raised.append(True)
+    resolved = []
+    event = SimpleNamespace(_resolve=lambda value: resolved.append(value))
+    window._handle_item(("name_dialog", event, "Project Update"))
+
+    body = FakeFrame()
+    window._render_steps = lambda body: None
+    window._render_name(body)
+    window._render = lambda: None
+    FakeButton.instances[0].kwargs["command"]()
+
+    assert resolved == ["Project Update"]
+    assert raised
 
 
 def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
@@ -378,15 +545,22 @@ def test_workflow_window_summary_ready_opens_summary_and_stays_open(tmp_path, mo
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     opened = []
+    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text("summary content", encoding="utf-8")
     window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
     window._render = lambda: None
     window._open_path = lambda path: opened.append(Path(path))
+    raised = []
+    window._raise_window = lambda: raised.append(True)
 
-    window._handle_item(("summary_ready", Path("/tmp/output/Summary - Topic.md")))
+    window._handle_item(("summary_ready", summary_path))
 
     assert window._state == "summary"
-    assert window._summary_path == Path("/tmp/output/Summary - Topic.md")
-    assert opened == [Path("/tmp/output/Summary - Topic.md")]
+    assert window._summary_path == summary_path
+    assert window._summary_preview == "summary content"
+    assert opened == []
+    assert raised
     assert fake_root.destroyed is False
 
 
@@ -400,7 +574,7 @@ def test_workflow_window_defaults_to_larger_geometry(tmp_path, monkeypatch):
 
     window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
 
-    assert window._window_width == 1040
-    assert window._window_height == 760
-    assert fake_root.geometry_value == "1040x760"
-    assert fake_root.minsize_value == (860, 620)
+    assert window._window_width == 1440
+    assert window._window_height == 900
+    assert fake_root.geometry_value == "1440x900"
+    assert fake_root.minsize_value == (1180, 700)

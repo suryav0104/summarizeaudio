@@ -93,6 +93,8 @@ def test_chooser_button_closes_then_launches_native_picker(monkeypatch, capsys):
             pass
 
         def pack(self, *args, **kwargs):
+            self.pack_kwargs = kwargs
+            self.pack_args = args
             pass
 
         def place(self, *args, **kwargs):
@@ -113,10 +115,20 @@ def test_chooser_button_closes_then_launches_native_picker(monkeypatch, capsys):
         configure = config
 
     class FakeButton(FakeWidget):
+        instances = []
+
         def __init__(self, parent, *args, **kwargs):
             super().__init__()
+            self.parent = parent
+            self.kwargs = kwargs
+            self.pack_calls = []
+            FakeButton.instances.append(self)
             if kwargs.get("text") == "Choose File":
                 state["choose"] = kwargs.get("command")
+
+        def pack(self, *args, **kwargs):
+            self.pack_calls.append(kwargs)
+            super().pack(*args, **kwargs)
 
     fake_tk = types.ModuleType("tkinter")
     fake_tk.Tk = lambda: FakeRoot()
@@ -140,6 +152,9 @@ def test_chooser_button_closes_then_launches_native_picker(monkeypatch, capsys):
     assert order.index("quit") < order.index("destroy")
     assert order.index("destroy") < order.index(("picker", "Select Audio File"))
     assert state.get("choose") is not None
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Choose File", "Cancel"]
+    assert FakeButton.instances[0].pack_calls[-1].get("side") == "left"
+    assert FakeButton.instances[1].pack_calls[-1].get("side") == "left"
     assert "/tmp/example.mp3" in capsys.readouterr().out
 
 
