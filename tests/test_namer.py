@@ -34,6 +34,12 @@ def test_namer_falls_back_to_default_on_timeout(ui_queue):
     assert result == "Recording_01-01-26"
 
 
+def test_namer_returns_none_on_cancel(ui_queue):
+    namer = Namer(ui_queue, default="Recording_01-01-26")
+    namer._resolve(None)
+    assert namer.wait(timeout=0.05) is None
+
+
 def test_namer_posts_dialog_request_to_queue(ui_queue):
     namer = Namer(ui_queue, default="Recording_01-01-26")
     assert not ui_queue.empty()

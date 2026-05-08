@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 import requests
 
 from summarizeaudio.config import BehaviorConfig, OllamaConfig, SummarizationConfig
-from summarizeaudio.error_handler import post_error
+from summarizeaudio.error_handler import friendly_message
 
 
 class OllamaError(RuntimeError):
@@ -88,7 +88,19 @@ class Summarizer:
             log.info("Ollama responded HTTP %d — streaming tokens", response.status_code)
         except Exception as exc:
             log.exception("Ollama request failed")
-            raise OllamaError(str(exc)) from exc
+            detail = str(exc)
+            response_obj = getattr(exc, "response", None)
+            if response_obj is not None:
+                body = getattr(response_obj, "text", "")
+                if body:
+                    detail = f"{detail}\n{body}"
+            raise OllamaError(
+                friendly_message(
+                    "summarizer.py → ollama",
+                    detail,
+                    traceback.format_exc(),
+                )
+            ) from exc
 
         # Accumulate streamed response
         text_parts: list[str] = []

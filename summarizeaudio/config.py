@@ -36,8 +36,7 @@ Transcript:
 
 
 def _toml_multiline_literal(text: str) -> str:
-    """Escape braces so the prompt can be embedded in an f-string TOML blob."""
-    return text.replace("{", "{{").replace("}", "}}")
+    return text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
 
 
 def _toml_basic_string(text: str) -> str:
@@ -144,6 +143,10 @@ class AppConfig:
     recording: RecordingConfig
 
 
+class ConfigError(RuntimeError):
+    """Raised when the config file cannot be loaded safely."""
+
+
 def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
     """Load config.toml, creating default if absent."""
     if not CONFIG_PATH.exists():
@@ -153,8 +156,13 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
     try:
         raw = tomllib.loads(CONFIG_PATH.read_text())
     except tomllib.TOMLDecodeError as exc:
-        _post_error(ui_queue, "config.py", str(exc), traceback.format_exc())
-        raise
+        message = (
+            "The configuration file could not be read. Open "
+            "`~/.summarizeaudio/config.toml` to fix it, or delete it to regenerate the "
+            "default settings."
+        )
+        _post_error(ui_queue, "config.py", message, traceback.format_exc())
+        raise ConfigError(message) from exc
 
     storage = raw.get("storage", {})
     whisper = raw.get("whisper", {})
@@ -165,9 +173,13 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
 
     # Required key: output_folder
     if "output_folder" not in storage:
-        msg = "Missing required config key: [storage] output_folder"
+        msg = (
+            "Your configuration is missing the output folder setting. Open "
+            "`~/.summarizeaudio/config.toml` and add `[storage] output_folder`, or delete the "
+            "file to regenerate the defaults."
+        )
         _post_error(ui_queue, "config.py", msg, "")
-        sys.exit(1)
+        raise ConfigError(msg)
 
     whisper_model = whisper.get("model", "base")
     if whisper_model not in VALID_WHISPER_MODELS:

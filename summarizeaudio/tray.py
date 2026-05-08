@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 from datetime import date
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import pystray
 from PIL import Image
 
 from summarizeaudio.config import load_config, save_config
-from summarizeaudio.error_handler import format_error, post_error
+from summarizeaudio.error_handler import format_error
 from summarizeaudio.namer import Namer, default_name
 from summarizeaudio.notifier import notify
 from summarizeaudio.pipeline import Pipeline, PipelineMode
@@ -23,6 +24,7 @@ from summarizeaudio.ui_dispatcher import UIDispatcher
 
 ASSETS = Path(__file__).parent.parent / "assets"
 LOCK_FILE = Path.home() / ".summarizeaudio" / "app.lock"
+EMOJI_ICONS = {"idle": "🎙", "recording": "🔴", "processing": "💭", "error": "⚠️"}
 
 
 def _osascript(script: str) -> tuple[int, str]:
@@ -70,11 +72,13 @@ class TrayApp:
             "error":      _load_icon("icon_error"),
         }
         self._tray: pystray.Icon | None = None
+        self._use_rumps = False
 
         # Register all ui_queue handlers up front (must happen before run())
         self._dispatcher.register("set_icon", self._on_set_icon)
         self._dispatcher.register("error", self._on_error)
         self._dispatcher.register("fatal_error", self._on_fatal_error)
+        self._dispatcher.register("info_dialog", self._on_info_dialog)
         self._dispatcher.register("name_dialog", self._on_name_dialog)
         self._dispatcher.register("override_dialog", self._on_override_dialog)
         self._dispatcher.register("local_audio_flow", self._run_local_audio_flow)
@@ -87,19 +91,30 @@ class TrayApp:
         if self._pipeline_running.is_set():
             return
         today = date.today().strftime("%m-%d-%y")
-        self._namer = Namer(self._ui_queue, default=f"Recording_{today}")
-        self._recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
-        self._recorder.start()
+        namer = Namer(self._ui_queue, default=f"Recording_{today}")
+        recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
+        try:
+            recorder.start()
+        except Exception as exc:
+            recorder.cleanup(delete_wav=True)
+            self._on_error("tray.py → recorder", str(exc), traceback.format_exc())
+            return
+        self._namer = namer
+        self._recorder = recorder
         self._set_icon("recording")
         self._rebuild_menu()
 
     def _on_stop_recording(self, icon, item) -> None:
-        if self._recorder is None:
+        recorder = self._recorder
+        if recorder is None:
             return
         try:
-            mp3_path, _start, _end = self._recorder.stop()
-        except ValueError as exc:
-            notify(str(exc))
+            mp3_path, _start, _end = recorder.stop()
+        except Exception as exc:
+            recorder.cleanup(delete_wav=False)
+            self._recorder = None
+            self._namer = None
+            self._on_error("tray.py → recorder", str(exc), traceback.format_exc())
             self._set_icon("idle")
             self._rebuild_menu()
             return
@@ -107,6 +122,11 @@ class TrayApp:
         name = self._namer.wait(timeout=30) if self._namer else f"Recording_{date.today().strftime('%m-%d-%y')}"
         self._recorder = None
         self._namer = None
+        if name is None:
+            mp3_path.unlink(missing_ok=True)
+            self._set_icon("idle")
+            self._rebuild_menu()
+            return
         self._pipeline_running.set()
         self._set_icon("processing")
         self._rebuild_menu()
@@ -139,10 +159,17 @@ class TrayApp:
     def _on_quality_high(self, icon, item) -> None:
         self._set_model("gemma3:12b", "High Quality (12B)")
 
+    def _model_label(self, model: str, label: str) -> str:
+        return f"✓ {label}" if self._cfg.ollama.model == model else label
+
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
-        icon.stop()
+        if self._use_rumps:
+            import rumps
+            rumps.quit_application()
+        else:
+            icon.stop()
 
     # ── UI queue handlers (run on main thread) ────────────────────────────────
 
@@ -169,7 +196,7 @@ class TrayApp:
         self._rebuild_menu()
 
     def _on_fatal_error(self, message: str, detail: str) -> None:
-        msg = f"{message}\n\n{detail}" if detail else message
+        msg = format_error("fatal", message, detail)
         if sys.platform == "darwin":
             safe = _as_safe(msg[:800])
             _osascript(
@@ -186,6 +213,22 @@ class TrayApp:
         self._stop_event.set()
         self._tray.stop()
 
+    def _on_info_dialog(self, title: str, message: str) -> None:
+        if sys.platform == "darwin":
+            safe_title = _as_safe(title[:120])
+            safe_message = _as_safe(message[:800])
+            _osascript(
+                f'display dialog "{safe_message}" buttons {{"OK"}} default button "OK" '
+                f'with icon note with title "{safe_title}"'
+            )
+        else:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showinfo(title, message)
+            root.destroy()
+
     def _on_name_dialog(self, namer: Namer) -> None:
         if sys.platform == "darwin":
             default_val = _as_safe(namer._default)
@@ -195,9 +238,14 @@ class TrayApp:
             )
             if rc == 0:
                 text = out.split("text returned:")[-1].strip()
-                namer._resolve(text if text else None)
+                if text:
+                    namer._resolve(text)
+                else:
+                    namer._resolve(None)
+                    self._cancel_recording_if_naming(namer)
             else:
                 namer._resolve(None)
+                self._cancel_recording_if_naming(namer)
         else:
             import tkinter as tk
             from tkinter import simpledialog
@@ -207,50 +255,47 @@ class TrayApp:
             )
             root.destroy()
             namer._resolve(result)
+            if result is None:
+                self._cancel_recording_if_naming(namer)
+
+    def _cancel_recording_if_naming(self, namer: Namer) -> None:
+        if self._namer is not namer or self._recorder is None:
+            return
+        self._recorder.cleanup(delete_wav=True)
+        self._recorder = None
+        self._namer = None
+        self._set_icon("idle")
+        self._rebuild_menu()
 
     def _on_override_dialog(self, override, prompt: str) -> None:
-        if sys.platform == "darwin":
-            # AppleScript dialog has a ~254-char limit on default answer; truncate gracefully
-            safe_prompt = _as_safe(prompt[:250])
-            rc, out = _osascript(
-                f'display dialog "Edit summarization prompt:" '
-                f'default answer "{safe_prompt}" '
-                f'buttons {{"Skip", "Summarize"}} default button "Summarize" '
-                f'with title "SummarizeAudio"'
-            )
-            if rc == 0 and "button returned:Summarize" in out:
-                text = out.split("text returned:")[-1].strip()
-                # AppleScript truncates default answer at ~254 chars, which cuts off
-                # {transcript}. Restore it from the original prompt if missing.
-                if "{transcript}" not in text:
-                    idx = prompt.find("{transcript}")
-                    text = text + prompt[len(text):] if idx != -1 else text + "\n\nTranscript:\n{transcript}"
-                override._resolve(text)
+        def launch() -> None:
+            cmd = [sys.executable, "-m", "summarizeaudio.prompt_editor", "--title", "SummarizeAudio"]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception as exc:
+                log.exception("Prompt editor helper failed to launch")
+                override._resolve(None)
+                self._ui_queue.put_nowait(
+                    (
+                        "info_dialog",
+                        "Prompt editor could not open.",
+                        f"SummarizeAudio could not show the prompt editor.\n\n{exc}",
+                    )
+                )
+                return
+
+            if proc.returncode == 0:
+                override._resolve(proc.stdout or prompt)
             else:
                 override._resolve(None)
-        else:
-            import tkinter as tk
-            from tkinter.scrolledtext import ScrolledText
-            root = tk.Tk()
-            root.title("Edit Summarization Prompt")
-            text = ScrolledText(root, width=80, height=20)
-            text.insert("1.0", prompt)
-            text.pack(padx=10, pady=10)
 
-            def confirm():
-                override._resolve(text.get("1.0", "end-1c"))
-                root.destroy()
-
-            def cancel():
-                override._resolve(None)
-                root.destroy()
-
-            import tkinter.ttk as ttk
-            frame = tk.Frame(root)
-            ttk.Button(frame, text="Summarize", command=confirm).pack(side="left", padx=5)
-            ttk.Button(frame, text="Skip", command=cancel).pack(side="left", padx=5)
-            frame.pack(pady=(0, 10))
-            root.mainloop()
+        threading.Thread(target=launch, daemon=True).start()
 
     def _on_summary_ready(self, path: Path) -> None:
         if sys.platform == "darwin":
@@ -275,7 +320,6 @@ class TrayApp:
     def _set_model(self, model: str, label: str) -> None:
         self._cfg.ollama.model = model
         save_config(self._cfg)
-        notify(f"Summarization model set to {label}.")
         self._rebuild_menu()
 
     def _run_local_audio_flow(self) -> None:
@@ -387,10 +431,16 @@ class TrayApp:
 
     def _set_icon(self, state: str) -> None:
         if self._tray:
-            self._tray.icon = self._icons.get(state, self._icons["idle"])
+            if self._use_rumps:
+                self._tray.title = EMOJI_ICONS.get(state, EMOJI_ICONS["idle"])
+            else:
+                self._tray.icon = self._icons.get(state, self._icons["idle"])
 
     def _rebuild_menu(self) -> None:
         if self._tray is None:
+            return
+        if self._use_rumps:
+            self._rebuild_rumps_menu()
             return
         recording = self._recorder is not None
         processing = self._pipeline_running.is_set()
@@ -406,22 +456,63 @@ class TrayApp:
                 "Summarize Text File…", self._on_local_text))
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("Summarization Model", None, enabled=False))
-            items.append(pystray.MenuItem(
-                f"Current Model: {current_model}",
-                None,
-                enabled=False,
-            ))
-            items.append(pystray.MenuItem("Fast Mode (gemma3:4b)", self._on_quality_fast))
-            items.append(pystray.MenuItem("High Quality Mode (gemma3:12b)", self._on_quality_high))
+            fast_label = self._model_label("gemma3:4b", "Fast Mode (gemma3:4b)")
+            high_label = self._model_label("gemma3:12b", "High Quality Mode (gemma3:12b)")
+            items.append(pystray.MenuItem(fast_label, self._on_quality_fast))
+            items.append(pystray.MenuItem(high_label, self._on_quality_high))
         else:
             items.append(pystray.MenuItem("Processing…", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem("Quit", self._on_quit))
         self._tray.menu = pystray.Menu(*items)
 
+    def _rebuild_rumps_menu(self) -> None:
+        import rumps
+
+        recording = self._recorder is not None
+        processing = self._pipeline_running.is_set()
+        items = []
+
+        if recording:
+            items.append(rumps.MenuItem("Stop Recording", callback=lambda _: self._on_stop_recording(None, None)))
+        elif not processing:
+            items.append(rumps.MenuItem("Start Recording", callback=lambda _: self._on_start_recording(None, None)))
+            items.append(rumps.MenuItem(
+                "Transcribe & Summarize Audio File…",
+                callback=lambda _: self._on_local_audio(None, None),
+            ))
+            items.append(rumps.MenuItem(
+                "Summarize Text File…",
+                callback=lambda _: self._on_local_text(None, None),
+            ))
+            items.append(None)
+            items.append(rumps.MenuItem("Summarization Model"))
+            fast_item = rumps.MenuItem(
+                "Fast Mode (gemma3:4b)",
+                callback=lambda _: self._on_quality_fast(None, None),
+            )
+            high_item = rumps.MenuItem(
+                "High Quality Mode (gemma3:12b)",
+                callback=lambda _: self._on_quality_high(None, None),
+            )
+            fast_item.state = 1 if self._cfg.ollama.model == "gemma3:4b" else 0
+            high_item.state = 1 if self._cfg.ollama.model == "gemma3:12b" else 0
+            items.extend([fast_item, high_item])
+        else:
+            items.append(rumps.MenuItem("Processing…"))
+
+        items.append(None)
+        items.append(rumps.MenuItem("Quit", callback=lambda _: self._on_quit(self._tray, None)))
+        self._tray.menu.clear()
+        self._tray.menu.update(items)
+
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        if sys.platform == "darwin":
+            self._run_rumps()
+            return
+
         import time
         self._tray = pystray.Icon(
             "SummarizeAudio",
@@ -449,6 +540,31 @@ class TrayApp:
 
         self._tray.run(setup=setup)
 
+    def _run_rumps(self) -> None:
+        import rumps
+
+        self._use_rumps = True
+        self._tray = rumps.App(
+            "SummarizeAudio",
+            title=EMOJI_ICONS["idle"],
+            menu=[],
+            quit_button=None,
+        )
+        self._rebuild_menu()
+
+        @rumps.timer(0.1)
+        def drain_queue(_):
+            self._dispatcher.drain()
+
+        def _handle_signal(sig, frame):
+            LOCK_FILE.unlink(missing_ok=True)
+            self._stop_event.set()
+            rumps.quit_application()
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
+        self._tray.run()
+
 
 def _check_single_instance() -> None:
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -474,9 +590,25 @@ def _pid_alive(pid: int) -> bool:
 
 
 def run() -> None:
-    _check_single_instance()
-    app = TrayApp()
     try:
+        _check_single_instance()
+        app = TrayApp()
         app.run()
+    except Exception:
+        msg = format_error("startup", "SummarizeAudio could not start.", traceback.format_exc())
+        if sys.platform == "darwin":
+            safe = _as_safe(msg[:800])
+            _osascript(
+                f'display dialog "{safe}" buttons {{"Quit"}} default button "Quit" '
+                f'with icon stop with title "SummarizeAudio Error"'
+            )
+        else:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("SummarizeAudio Error", msg)
+            root.destroy()
+        raise SystemExit(1)
     finally:
         LOCK_FILE.unlink(missing_ok=True)

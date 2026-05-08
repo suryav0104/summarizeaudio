@@ -9,6 +9,7 @@ from summarizeaudio.config import (
     load_config,
     save_config,
     AppConfig,
+    ConfigError,
     CONFIG_PATH,
     DEFAULT_TOML,
     DEFAULT_SUMMARIZATION_PROMPT,
@@ -58,6 +59,22 @@ def test_save_config_persists_model_choice(tmp_path, monkeypatch):
     assert reloaded.ollama.model == "gemma3:12b"
 
 
+def test_save_config_preserves_transcript_placeholder(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(DEFAULT_TOML)
+    monkeypatch.setattr("summarizeaudio.config.CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("summarizeaudio.config.CONFIG_DIR", tmp_path)
+
+    cfg = load_config()
+    cfg.summarization.default_prompt = "Summarize: {transcript}"
+    save_config(cfg)
+
+    saved = cfg_path.read_text(encoding="utf-8")
+    assert "{transcript}" in saved
+    assert "{{transcript}}" not in saved
+    assert load_config().summarization.default_prompt == "Summarize: {transcript}"
+
+
 def test_invalid_whisper_model_falls_back_to_base(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text('[whisper]\nmodel = "huge"\nlanguage = "en"\n'
@@ -77,11 +94,12 @@ def test_malformed_toml_posts_error_and_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.config.CONFIG_PATH", cfg_path)
     monkeypatch.setattr("summarizeaudio.config.CONFIG_DIR", tmp_path)
     q = queue.Queue()
-    with pytest.raises(Exception):
+    with pytest.raises(ConfigError):
         load_config(ui_queue=q)
     assert not q.empty()
     item = q.get_nowait()
     assert item[0] == "error"
+    assert "configuration file could not be read" in item[2].lower()
 
 
 def test_missing_required_key_posts_error_and_raises(tmp_path, monkeypatch):
@@ -91,9 +109,9 @@ def test_missing_required_key_posts_error_and_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.config.CONFIG_PATH", cfg_path)
     monkeypatch.setattr("summarizeaudio.config.CONFIG_DIR", tmp_path)
     q = queue.Queue()
-    with pytest.raises(SystemExit):
+    with pytest.raises(ConfigError):
         load_config(ui_queue=q)
     assert not q.empty()
     item = q.get_nowait()
     assert item[0] == "error"
-    assert "output_folder" in item[2].lower()
+    assert "missing the output folder setting" in item[2].lower()

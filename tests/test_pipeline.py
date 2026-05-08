@@ -1,6 +1,7 @@
 # tests/test_pipeline.py
 import queue
 import shutil
+import tempfile
 import wave
 from datetime import date
 from pathlib import Path
@@ -72,13 +73,58 @@ def test_mode2_does_not_touch_source_file(tmp_output, ui_queue, monkeypatch):
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript", encoding="utf-8"),
+        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     source = make_silence_mp3(tmp_output / "source_audio.mp3")
     p = Pipeline(cfg=cfg, ui_queue=ui_queue)
     p.run(mode=PipelineMode.LOCAL_AUDIO, session_name="LocalAudio", source_path=source)
     assert source.exists(), "source audio must not be deleted"
+
+
+def test_mode2_copies_source_audio_to_local_temp_file(tmp_output, ui_queue, monkeypatch):
+    mock_ollama(monkeypatch)
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+    )
+    copied = []
+
+    real_copyfile = shutil.copyfile
+
+    def spy_copyfile(src, dst, *args, **kwargs):
+        copied.append((Path(src), Path(dst)))
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr("summarizeaudio.pipeline.shutil.copyfile", spy_copyfile)
+    cfg = make_config(tmp_output)
+    source = make_silence_mp3(tmp_output / "source_audio.mp3")
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+    p.run(mode=PipelineMode.LOCAL_AUDIO, session_name="LocalAudio", source_path=source)
+    assert copied, "local audio should be copied before transcription"
+    assert copied[0][0] == source
+    assert copied[0][1].parent == Path(tempfile.gettempdir())
+
+
+def test_mode2_copy_timeout_posts_cloud_sync_message(tmp_output, ui_queue, monkeypatch):
+    cfg = make_config(tmp_output)
+    source = make_silence_mp3(tmp_output / "source_audio.mp3")
+
+    def timeout_copyfile(_src, _dst, *args, **kwargs):
+        raise TimeoutError(
+            "[Errno 60] Operation timed out: "
+            "'/Users/surya/Library/CloudStorage/OneDrive-Personal/source_audio.mp3'"
+        )
+
+    monkeypatch.setattr("summarizeaudio.pipeline.shutil.copyfile", timeout_copyfile)
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    p.run(mode=PipelineMode.LOCAL_AUDIO, session_name="LocalAudio", source_path=source)
+
+    assert not ui_queue.empty()
+    item = ui_queue.get_nowait()
+    assert item[0] == "error"
+    assert "cloud-synced location" in item[2].lower()
 
 
 def test_mode3_does_not_touch_source_txt(tmp_output, ui_queue, monkeypatch):
@@ -97,7 +143,7 @@ def test_pipeline_override_dismissed_produces_no_summary(tmp_output, ui_queue, m
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript", encoding="utf-8"),
+        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     cfg.behavior.show_override_dialog = True
@@ -124,12 +170,67 @@ def test_transcription_failure_posts_error_and_preserves_mp3(tmp_output, ui_queu
     with patch("summarizeaudio.transcriber.Transcriber.transcribe",
                side_effect=RuntimeError("whisper crashed")):
         p = Pipeline(cfg=cfg, ui_queue=ui_queue)
-        with pytest.raises(RuntimeError):
-            p.run(mode=PipelineMode.RECORD, session_name="Crash", mp3_path=mp3,
-                  done_event=done)
+        p.run(mode=PipelineMode.RECORD, session_name="Crash", mp3_path=mp3,
+              done_event=done)
     assert mp3.exists(), "MP3 must be preserved on transcription failure"
     assert not done.is_set(), "done_event must be cleared even after exception"
     # error must have been posted to ui_queue by pipeline
     assert not ui_queue.empty()
     item = ui_queue.get_nowait()
     assert item[0] == "error"
+    assert "something went wrong" in item[2].lower()
+
+
+def test_too_short_transcript_posts_centered_info_dialog(tmp_output, ui_queue, monkeypatch):
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, audio, out_txt: out_txt.write_text("...", encoding="utf-8"),
+    )
+    cfg = make_config(tmp_output)
+    mp3 = make_silence_mp3(tmp_output / "short.mp3")
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    p.run(mode=PipelineMode.RECORD, session_name="Short", mp3_path=mp3)
+
+    assert not ui_queue.empty()
+    item = ui_queue.get_nowait()
+    assert item[0] == "info_dialog"
+    assert item[1] == "No usable audio was captured."
+    assert "microphone" in item[2]
+
+
+def test_mode2_too_short_transcript_mentions_selected_file(tmp_output, ui_queue, monkeypatch):
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, audio, out_txt: out_txt.write_text("...", encoding="utf-8"),
+    )
+    cfg = make_config(tmp_output)
+    source = make_silence_mp3(tmp_output / "short_source.mp3")
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    p.run(mode=PipelineMode.LOCAL_AUDIO, session_name="ShortSource", source_path=source)
+
+    assert not ui_queue.empty()
+    item = ui_queue.get_nowait()
+    assert item[0] == "info_dialog"
+    assert item[1] == "No usable speech was found."
+    assert "selected audio file" in item[2]
+    assert "microphone" not in item[2]
+
+
+def test_transcription_timeout_posts_cloud_sync_message(tmp_output, ui_queue, monkeypatch):
+    import threading
+    cfg = make_config(tmp_output)
+    mp3 = make_silence_mp3(tmp_output / "timeout.mp3")
+    done = threading.Event()
+    done.set()
+    with patch(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        side_effect=RuntimeError("[Errno 60] Operation timed out: '/Users/surya/OneDrive/file.mp3'"),
+    ):
+        p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+        p.run(mode=PipelineMode.RECORD, session_name="Timeout", mp3_path=mp3, done_event=done)
+    assert not ui_queue.empty()
+    item = ui_queue.get_nowait()
+    assert item[0] == "error"
+    assert "cloud-synced location" in item[2].lower()

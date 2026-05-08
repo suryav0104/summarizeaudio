@@ -7,7 +7,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-from summarizeaudio.error_handler import post_error
+from summarizeaudio.error_handler import friendly_message, post_error
 from summarizeaudio.notifier import notify
 
 
@@ -43,8 +43,17 @@ class Transcriber:
                 notify("Whisper model ready.")
             except Exception as exc:
                 log.exception("Failed to load Whisper model '%s'", self._model_name)
-                post_error(self._ui_queue, "transcriber.py → faster_whisper",
-                           str(exc), traceback.format_exc())
+                message = friendly_message(
+                    "transcriber.py → faster_whisper",
+                    str(exc),
+                    traceback.format_exc(),
+                )
+                post_error(
+                    self._ui_queue,
+                    "transcriber.py → faster_whisper",
+                    message,
+                    traceback.format_exc(),
+                )
                 raise
 
     def transcribe(self, audio_path: Path, out_txt: Path) -> None:
@@ -62,6 +71,15 @@ class Transcriber:
             log.info("Transcription written: %d chars → %s", len(text), out_txt)
         except Exception as exc:
             log.exception("Transcription error for %s", audio_path)
-            post_error(self._ui_queue, "transcriber.py → faster_whisper",
-                       str(exc), traceback.format_exc())
+            message = friendly_message(
+                "transcriber.py → faster_whisper",
+                str(exc),
+                traceback.format_exc(),
+            )
+            post_error(
+                self._ui_queue,
+                "transcriber.py → faster_whisper",
+                message,
+                traceback.format_exc(),
+            )
             raise

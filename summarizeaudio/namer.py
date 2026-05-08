@@ -29,7 +29,9 @@ class Namer:
         self._name = name
         self._event.set()
 
-    def wait(self, timeout: float = 30) -> str:
-        """Block until name is submitted or timeout; returns name or default."""
-        self._event.wait(timeout=timeout)
-        return self._name if self._name is not None else self._default
+    def wait(self, timeout: float = 30) -> str | None:
+        """Block until name is submitted; timeout returns default, cancel returns None."""
+        resolved = self._event.wait(timeout=timeout)
+        if not resolved:
+            return self._default
+        return self._name

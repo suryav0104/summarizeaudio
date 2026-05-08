@@ -3,6 +3,8 @@ from __future__ import annotations
 import enum
 import logging
 import queue
+import shutil
+import tempfile
 import threading
 import traceback
 from pathlib import Path
@@ -11,8 +13,7 @@ from uuid import uuid4
 log = logging.getLogger(__name__)
 
 from summarizeaudio.config import AppConfig
-from summarizeaudio.error_handler import post_error
-from summarizeaudio.notifier import notify
+from summarizeaudio.error_handler import friendly_message, post_error
 from summarizeaudio.renamer import Renamer
 from summarizeaudio.summarizer import Summarizer, OllamaError
 from summarizeaudio.transcriber import Transcriber
@@ -28,6 +29,7 @@ class Pipeline:
     def __init__(self, cfg: AppConfig, ui_queue: queue.Queue) -> None:
         self._cfg = cfg
         self._ui_queue = ui_queue
+        self._error_posted = False
 
     def run(
         self,
@@ -44,11 +46,19 @@ class Pipeline:
         the icon always resets to idle.
         """
         log.info("Pipeline starting: mode=%s session=%r", mode.value, session_name)
+        self._error_posted = False
         try:
             self._run_inner(mode, session_name, mp3_path, source_path)
-        except Exception:
+        except Exception as exc:
+            tb = traceback.format_exc()
             log.exception("Pipeline failed: mode=%s session=%r", mode.value, session_name)
-            raise
+            if not self._error_posted:
+                self._post_error(
+                    "pipeline.py",
+                    friendly_message("pipeline.py", str(exc), tb),
+                    tb,
+                )
+            return
         finally:
             log.info("Pipeline finished: mode=%s session=%r", mode.value, session_name)
             if done_event is not None:
@@ -107,21 +117,51 @@ class Pipeline:
 
         AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".webm"}
         if audio_for_transcription.suffix.lower() not in AUDIO_EXTENSIONS:
-            post_error(self._ui_queue, "pipeline.py",
-                       f"'{audio_for_transcription.name}' is not a supported audio file. "
-                       f"Please select an audio file (mp3, wav, m4a, etc.).", "")
+            self._post_error(
+                "pipeline.py",
+                f"'{audio_for_transcription.name}' is not a supported audio file. "
+                "Please select an audio file (mp3, wav, m4a, etc.).",
+                "",
+            )
             return
 
         log.info("Transcribing %s → %s", audio_for_transcription.name, tmp_txt.name)
+        transcription_source = audio_for_transcription
+        temp_audio_copy: Path | None = None
+        if mode == PipelineMode.LOCAL_AUDIO:
+            temp_audio_copy = Path(tempfile.gettempdir()) / f"summarizeaudio-{uuid4()}{audio_for_transcription.suffix}"
+            log.info("Copying source audio to local temp file %s", temp_audio_copy.name)
+            try:
+                shutil.copyfile(audio_for_transcription, temp_audio_copy)
+            except Exception as exc:
+                tb = traceback.format_exc()
+                log.exception("Could not copy source audio to local temp file: %s", audio_for_transcription)
+                self._post_error(
+                    "pipeline.py",
+                    friendly_message("pipeline.py", str(exc), tb),
+                    tb,
+                )
+                return
+            transcription_source = temp_audio_copy
         try:
-            transcriber.transcribe(audio_for_transcription, tmp_txt)
+            transcriber.transcribe(transcription_source, tmp_txt)
         except Exception as exc:
             log.exception("Transcription failed for %s", audio_for_transcription)
-            post_error(self._ui_queue, "pipeline.py → transcriber",
-                       str(exc), traceback.format_exc())
+            self._post_error(
+                "pipeline.py → transcriber",
+                friendly_message(
+                    "pipeline.py → transcriber",
+                    str(exc),
+                    traceback.format_exc(),
+                ),
+                traceback.format_exc(),
+            )
             if mode == PipelineMode.LOCAL_AUDIO and tmp_txt.exists():
                 tmp_txt.unlink()
             raise
+        finally:
+            if temp_audio_copy is not None and temp_audio_copy.exists():
+                temp_audio_copy.unlink(missing_ok=True)
         log.info("Transcription complete, output: %s", tmp_txt)
 
         # Rename and move
@@ -134,9 +174,22 @@ class Pipeline:
         transcript_text = session.transcript.read_text(encoding="utf-8-sig", errors="replace").strip()
         if len(transcript_text) < 20:
             log.warning("Transcript too short (%d chars) — skipping summarization", len(transcript_text))
-            post_error(self._ui_queue, "pipeline.py",
-                       f"Recording captured no usable audio (transcript: '{transcript_text}'). "
-                       "Check your input device in System Settings → Sound → Input.", "")
+            if mode == PipelineMode.RECORD:
+                title = "No usable audio was captured."
+                message = "Check your microphone or system audio input, then try recording again."
+            else:
+                title = "No usable speech was found."
+                message = (
+                    "The selected audio file did not produce enough transcript text to summarize. "
+                    "Make sure the file contains clear speech, then try again."
+                )
+            self._ui_queue.put_nowait(
+                (
+                    "info_dialog",
+                    title,
+                    message,
+                )
+            )
             return
         log.info("Summarizing %d chars → %s", len(transcript_text), session.summary)
         try:
@@ -151,4 +204,8 @@ class Pipeline:
             self._ui_queue.put_nowait(("summary_ready", session.summary))
         else:
             log.warning("Summary file not created")
-            notify("Transcription complete.")
+            self._ui_queue.put_nowait(("info_dialog", "Transcription complete.", "No summary file was created."))
+
+    def _post_error(self, component: str, message: str, traceback_str: str) -> None:
+        self._error_posted = True
+        post_error(self._ui_queue, component, message, traceback_str)

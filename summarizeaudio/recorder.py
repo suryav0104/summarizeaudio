@@ -53,41 +53,76 @@ class Recorder:
         self._start_time: datetime | None = None
         self._chunk_count = 0
 
+    def cleanup(self, delete_wav: bool = False) -> None:
+        """Close any open handles and optionally remove the unfinished WAV."""
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+            except Exception:
+                pass
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        if self._wav_writer is not None:
+            try:
+                self._wav_writer.close()
+            except Exception:
+                pass
+            self._wav_writer = None
+        if self._raw_file is not None:
+            try:
+                self._raw_file.close()
+            except Exception:
+                pass
+            self._raw_file = None
+        if delete_wav and self._wav_path and self._wav_path.exists():
+            self._wav_path.unlink(missing_ok=True)
+
     def start(self) -> None:
-        self._session_id = str(uuid4())
-        self._wav_path = self._output_folder / f"{self._session_id}.wav"
-        # Open raw file first so we can flush it portably without relying on
-        # CPython internals like wave.Wave_write._ensure_header_written
-        self._raw_file = open(self._wav_path, "wb")  # noqa: WPS515
-        self._wav_writer = wave.open(self._raw_file, "wb")
-        self._wav_writer.setnchannels(CHANNELS)
-        self._wav_writer.setsampwidth(2)  # 16-bit
-        self._wav_writer.setframerate(SAMPLE_RATE)
-        self._start_time = datetime.now()
-        self._chunk_count = 0
+        try:
+            self._session_id = str(uuid4())
+            self._wav_path = self._output_folder / f"{self._session_id}.wav"
+            # Open raw file first so we can flush it portably without relying on
+            # CPython internals like wave.Wave_write._ensure_header_written
+            self._raw_file = open(self._wav_path, "wb")  # noqa: WPS515
+            self._wav_writer = wave.open(self._raw_file, "wb")
+            self._wav_writer.setnchannels(CHANNELS)
+            self._wav_writer.setsampwidth(2)  # 16-bit
+            self._wav_writer.setframerate(SAMPLE_RATE)
+            self._start_time = datetime.now()
+            self._chunk_count = 0
 
-        if self._input_device:
-            loopback_device = _find_device_by_name(self._input_device)
-            if loopback_device is None and not getattr(self, "_loopback_warned", False):
-                self._loopback_warned = True
-                notify(f"Configured input device '{self._input_device}' not found. Recording from system default.")
-        else:
-            loopback_device = _get_loopback_device()
-            if loopback_device is None and not getattr(self, "_loopback_warned", False):
-                self._loopback_warned = True
-                if platform.system() == "Darwin":
-                    notify("System audio not found. Recording mic only. Install BlackHole for system audio capture.")
-                elif platform.system() == "Windows":
-                    notify("No WASAPI loopback device found. Recording mic only.")
+            if self._input_device:
+                loopback_device = _find_device_by_name(self._input_device)
+                if loopback_device is None and not getattr(self, "_loopback_warned", False):
+                    self._loopback_warned = True
+                    notify(
+                        f"Configured input device '{self._input_device}' not found. Recording from system default."
+                    )
+            else:
+                loopback_device = _get_loopback_device()
+                if loopback_device is None and not getattr(self, "_loopback_warned", False):
+                    self._loopback_warned = True
+                    if platform.system() == "Darwin":
+                        notify(
+                            "System audio not found. Recording mic only. Install BlackHole for system audio capture."
+                        )
+                    elif platform.system() == "Windows":
+                        notify("No WASAPI loopback device found. Recording mic only.")
 
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            device=loopback_device,
-            callback=self._callback,
-        )
-        self._stream.start()
+            self._stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                device=loopback_device,
+                callback=self._callback,
+            )
+            self._stream.start()
+        except Exception:
+            self.cleanup(delete_wav=True)
+            raise
 
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         if self._wav_writer is None:
@@ -115,8 +150,7 @@ class Recorder:
 
         duration = (end_time - self._start_time).total_seconds()
         if duration < MIN_DURATION_SECONDS:
-            if self._wav_path and self._wav_path.exists():
-                self._wav_path.unlink()
+            self.cleanup(delete_wav=True)
             raise ValueError(f"Recording too short ({duration:.1f}s < {MIN_DURATION_SECONDS}s)")
 
         # Convert WAV → MP3 using ffmpeg
