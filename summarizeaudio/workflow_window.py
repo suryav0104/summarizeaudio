@@ -15,6 +15,128 @@ from tkinter.scrolledtext import ScrolledText
 from summarizeaudio.config import load_config
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.chooser_window import _native_audio_picker, _native_text_picker
+from summarizeaudio.sessions import session_action_specs, session_for_summary_path
+
+
+class _MarqueeProgress:
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        width: int,
+        height: int = 16,
+        track_color: str = "#e7ebf2",
+        bar_color: str = "#222222",
+    ) -> None:
+        self._frame = ttk.Frame(parent, style="Card.TFrame")
+        self._canvas = tk.Canvas(
+            self._frame,
+            width=width,
+            height=height,
+            bg="white",
+            highlightthickness=0,
+            bd=0,
+        )
+        self._canvas.pack(fill="x", expand=True)
+        self._track_color = track_color
+        self._bar_color = bar_color
+        self._height = height
+        self._base_width = width
+        self._bar_width = max(300, int(width * 0.294))
+        self._radius = max(4, height // 2)
+        self._bar_x = 0
+        self._direction = 1
+        self._track_items: list[int] = []
+        self._bar_items: list[int] = []
+        self._after_id: str | None = None
+        self._running = False
+        self._interval = 16
+        self._step = 4
+        self._canvas.bind("<Configure>", self._on_configure)
+        self._draw()
+
+    def pack(self, *args, **kwargs) -> None:
+        self._frame.pack(*args, **kwargs)
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._tick()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._after_id is not None:
+            try:
+                self._canvas.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def destroy(self) -> None:
+        self.stop()
+        self._frame.destroy()
+
+    def _on_configure(self, _event) -> None:
+        width = max(self._canvas.winfo_width(), self._base_width)
+        if width == self._base_width and self._track_items:
+            return
+        self._base_width = width
+        self._bar_width = max(300, int(width * 0.294))
+        max_x = max(0, width - self._bar_width)
+        self._bar_x = min(max(self._bar_x, 0), max_x)
+        self._draw()
+
+    def _capsule(self, x1: float, y1: float, x2: float, y2: float, color: str) -> list[int]:
+        radius = max(1.0, (y2 - y1) / 2.0)
+        rect = self._canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=color, outline="")
+        left = self._canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=color, outline="")
+        right = self._canvas.create_oval(x2 - radius * 2, y1, x2, y2, fill=color, outline="")
+        return [rect, left, right]
+
+    def _set_capsule(self, items: list[int], x1: float, y1: float, x2: float, y2: float, color: str) -> None:
+        radius = max(1.0, (y2 - y1) / 2.0)
+        self._canvas.coords(items[0], x1 + radius, y1, x2 - radius, y2)
+        self._canvas.coords(items[1], x1, y1, x1 + radius * 2, y2)
+        self._canvas.coords(items[2], x2 - radius * 2, y1, x2, y2)
+        self._canvas.itemconfigure(items[0], fill=color)
+        self._canvas.itemconfigure(items[1], fill=color)
+        self._canvas.itemconfigure(items[2], fill=color)
+
+    def _draw(self) -> None:
+        self._canvas.delete("all")
+        width = max(self._canvas.winfo_width(), self._base_width)
+        self._track_items = self._capsule(0, 2, width, self._height - 2, self._track_color)
+        self._bar_items = self._capsule(
+            self._bar_x,
+            2,
+            self._bar_x + self._bar_width,
+            self._height - 2,
+            self._bar_color,
+        )
+
+    def _tick(self) -> None:
+        if not self._running or not self._canvas.winfo_exists():
+            return
+        width = max(self._canvas.winfo_width(), self._base_width)
+        max_x = max(0, width - self._bar_width)
+        self._bar_x += self._step * self._direction
+        if self._bar_x >= max_x:
+            self._bar_x = max_x
+            self._direction = -1
+        elif self._bar_x <= 0:
+            self._bar_x = 0
+            self._direction = 1
+        self._set_capsule(self._track_items, 0, 2, width, self._height - 2, self._track_color)
+        self._set_capsule(
+            self._bar_items,
+            self._bar_x,
+            2,
+            self._bar_x + self._bar_width,
+            self._height - 2,
+            self._bar_color,
+        )
+        self._after_id = self._canvas.after(self._interval, self._tick)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,8 +189,6 @@ class WorkflowWindow:
         style.configure("Sub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 12))
         style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 15, "bold"))
         style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 11))
-        style.configure("Progress.Horizontal.TProgressbar", troughcolor="#e7ebf2", background="#222222", thickness=16)
-
         self._title = tk.StringVar(value="Prepare your workflow")
         self._subtitle = tk.StringVar(value="Pick a file, review the prompt, and finish with a final name.")
         self._status = tk.StringVar(value=self._step_text)
@@ -84,6 +204,15 @@ class WorkflowWindow:
         self._button_border = "#d4dce8"
         self._button_accent_bg = "#2e72ff"
         self._button_accent_fg = "#000000"
+
+    def _stop_progress(self) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress.stop()
+        except Exception:
+            pass
+        self._progress = None
 
     def run(self) -> int:
         self._render()
@@ -202,6 +331,22 @@ class WorkflowWindow:
         except Exception:
             pass
 
+    def _reveal_in_finder(self, path: Path) -> None:
+        try:
+            if sys.platform == "darwin":
+                safe_path = str(path).replace("\\", "\\\\").replace('"', '\\"')
+                script = (
+                    f'tell application "Finder" to reveal POSIX file "{safe_path}"\n'
+                    "tell application \"Finder\" to activate\n"
+                )
+                subprocess.run(["osascript", "-e", script], check=False)
+            elif hasattr(os, "startfile"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception:
+            pass
+
     def _raise_window(self) -> None:
         try:
             self._root.deiconify()
@@ -211,6 +356,7 @@ class WorkflowWindow:
             pass
 
     def _render(self) -> None:
+        self._stop_progress()
         for child in self._root.winfo_children():
             if child is not self._content:
                 try:
@@ -228,14 +374,12 @@ class WorkflowWindow:
         ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(8, 14))
 
         if self._state == "processing":
-            self._progress = ttk.Progressbar(
+            self._progress = _MarqueeProgress(
                 body,
-                mode="indeterminate",
-                style="Progress.Horizontal.TProgressbar",
-                length=2700,
+                width=max(960, self._window_width - 120),
             )
             self._progress.pack(fill="x", pady=(0, 18))
-            self._progress.start(20)
+            self._progress.start()
         else:
             self._progress = None
 
@@ -285,8 +429,7 @@ class WorkflowWindow:
         self._render_steps(body)
 
     def _render_prompt(self, body: ttk.Frame) -> None:
-        if self._progress is not None:
-            self._progress.stop()
+        self._stop_progress()
         self._title.set("Review prompt")
         self._subtitle.set("You can edit the summarization prompt without leaving the workflow.")
         self._status.set("Prompt override requested")
@@ -316,8 +459,7 @@ class WorkflowWindow:
         confirm_btn.pack(side="right")
 
     def _render_name(self, body: ttk.Frame) -> None:
-        if self._progress is not None:
-            self._progress.stop()
+        self._stop_progress()
         self._title.set("Name the output")
         self._subtitle.set("This name will be applied to the recording, transcript, and summary.")
         self._status.set("Name the output")
@@ -353,8 +495,7 @@ class WorkflowWindow:
         cancel_btn.pack(side="left", padx=(8, 0))
 
     def _render_message(self, body: ttk.Frame) -> None:
-        if self._progress is not None:
-            self._progress.stop()
+        self._stop_progress()
         self._render_steps(body)
         ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(10, 16))
         actions = ttk.Frame(body, style="Card.TFrame")
@@ -362,25 +503,20 @@ class WorkflowWindow:
         self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
 
     def _render_summary(self, body: ttk.Frame) -> None:
-        if self._progress is not None:
-            self._progress.stop()
-        self._title.set("Summary ready")
-        self._subtitle.set("Review the result or open the output folder.")
-        self._status.set("Summary complete")
+        self._stop_progress()
+        self._title.set("Summary complete")
+        self._subtitle.set("Review the result or open the transcript or recording.")
+        self._status.set("Review the result")
         self._detail_text = (
-            "The summary was saved successfully. You can open it now, view the containing folder, "
-            "or close this window when you're done."
+            "The summary was saved successfully. You can open the transcript or recording if you "
+            "want to review the source files, or close this window when you're done."
         )
         self._render_steps(body)
 
         summary_path = self._summary_path
-        path_box = ttk.Frame(body, style="Card.TFrame")
-        path_box.pack(fill="x", pady=(8, 12))
-        ttk.Label(path_box, text="Summary file", style="Detail.TLabel").pack(anchor="w")
-        ttk.Label(path_box, text=str(summary_path) if summary_path else "", style="Step.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(2, 0))
-
+        session = session_for_summary_path(self._cfg.storage.output_folder, summary_path) if summary_path is not None else None
         preview_box = ttk.Frame(body, style="Card.TFrame")
-        preview_box.pack(fill="both", expand=True, pady=(0, 8))
+        preview_box.pack(fill="both", expand=True, pady=(8, 8))
         preview = self._text_widget(preview_box, width=96, height=8)
         preview.pack(fill="both", expand=True)
         preview.insert("1.0", self._summary_preview)
@@ -388,8 +524,10 @@ class WorkflowWindow:
 
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(fill="x", pady=(8, 0))
-        if summary_path is not None:
-            self._button(actions, text="Open Summary", command=lambda: self._open_path(summary_path), primary=True).pack(side="left")
+        if session is not None and session.transcript is not None:
+            self._button(actions, text="Open Transcript", command=lambda: self._open_path(session.transcript), primary=True).pack(side="left")
+        if session is not None and session.audio is not None:
+            self._button(actions, text="Open Recording", command=lambda: self._open_path(session.audio), primary=False).pack(side="left", padx=(8, 0))
         self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
 
     def _render_steps(self, body: ttk.Frame) -> None:
@@ -588,6 +726,7 @@ class WorkflowWindow:
             return
 
     def _close(self) -> None:
+        self._stop_progress()
         try:
             self._root.grab_release()
         except Exception:

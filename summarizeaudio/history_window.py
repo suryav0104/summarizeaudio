@@ -241,7 +241,7 @@ class HistoryWindow:
             font=("Helvetica Neue", 11, "underline"),
         )
         location.pack(side="left", padx=(28, 0))
-        location.bind("<Button-1>", lambda _event, path=session.folder: self._open_path(path))
+        location.bind("<Button-1>", lambda _event, path=session.folder: self._reveal_in_finder(path))
         location.bind("<Enter>", lambda _event: location.configure(foreground="#1f5ddb"))
         location.bind("<Leave>", lambda _event: location.configure(foreground="#2e72ff"))
 
@@ -258,11 +258,22 @@ class HistoryWindow:
         specs = session_action_specs(session)
         for idx, (label, path) in enumerate(specs):
             if idx == 0:
-                self._button(actions, text=label, command=lambda p=path: self._open_path(p), primary=True).pack(side="left")
+                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=True).pack(side="left")
             else:
-                self._button(actions, text=label, command=lambda p=path: self._open_path(p), primary=False).pack(side="left", padx=(8, 0))
+                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(8, 0))
 
-    def _open_path(self, path: Path) -> None:
+    def _open_file(self, path: Path) -> None:
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif hasattr(os, "startfile"):
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception:
+            pass
+
+    def _reveal_in_finder(self, path: Path) -> None:
         try:
             if sys.platform == "darwin":
                 safe_path = str(path).replace("\\", "\\\\").replace('"', '\\"')

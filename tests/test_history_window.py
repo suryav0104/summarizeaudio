@@ -145,7 +145,8 @@ def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     window._button_border = "#d4dce8"
     window._button_accent_bg = "#2e72ff"
     window._button_accent_fg = "#000000"
-    window._open_path = lambda path: path
+    window._open_file = lambda path: path
+    window._reveal_in_finder = lambda path: path
 
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -286,13 +287,25 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
     assert FakeTreeview.instances[0]._seen == "0"
 
 
-def test_history_window_open_path_uses_finder_reveal_on_macos(tmp_path, monkeypatch):
+def test_history_window_open_file_uses_open_on_macos(tmp_path, monkeypatch):
     window = history_window.HistoryWindow.__new__(history_window.HistoryWindow)
     calls = []
     monkeypatch.setattr("summarizeaudio.history_window.sys.platform", "darwin")
     monkeypatch.setattr("summarizeaudio.history_window.subprocess.run", lambda cmd, check=False: calls.append(cmd))
 
-    window._open_path(tmp_path / "History Folder")
+    window._open_file(tmp_path / "Transcript.md")
+
+    assert calls
+    assert calls[0] == ["open", str(tmp_path / "Transcript.md")]
+
+
+def test_history_window_reveal_in_finder_uses_finder_reveal_on_macos(tmp_path, monkeypatch):
+    window = history_window.HistoryWindow.__new__(history_window.HistoryWindow)
+    calls = []
+    monkeypatch.setattr("summarizeaudio.history_window.sys.platform", "darwin")
+    monkeypatch.setattr("summarizeaudio.history_window.subprocess.run", lambda cmd, check=False: calls.append(cmd))
+
+    window._reveal_in_finder(tmp_path / "History Folder")
 
     assert calls
     assert calls[0][0] == "osascript"

@@ -117,23 +117,63 @@ class FakeStringVar:
         return self._value
 
 
-class FakeProgressbar:
-    started = 0
+class FakeCanvas:
+    instances = []
 
     def __init__(self, *args, **kwargs):
-        self.packed = False
+        self.args = args
         self.kwargs = kwargs
-        self.start_args = None
+        self.packed = False
+        self.deleted = []
+        self.bound = []
+        self.created = []
+        self.coords_calls = []
+        self.itemconfigure_calls = []
+        self.after_calls = []
+        self.after_cancel_calls = []
+        self._destroyed = False
+        self._next_after = 0
+        FakeCanvas.instances.append(self)
 
     def pack(self, *args, **kwargs):
         self.packed = True
 
-    def start(self, *args, **kwargs):
-        FakeProgressbar.started += 1
-        self.start_args = args
+    def bind(self, event, callback):
+        self.bound.append((event, callback))
 
-    def stop(self):
-        pass
+    def create_rectangle(self, *args, **kwargs):
+        self.created.append(("rectangle", args, kwargs))
+        return len(self.created)
+
+    def create_oval(self, *args, **kwargs):
+        self.created.append(("oval", args, kwargs))
+        return len(self.created)
+
+    def coords(self, item, *args):
+        self.coords_calls.append((item, args))
+
+    def itemconfigure(self, item, **kwargs):
+        self.itemconfigure_calls.append((item, kwargs))
+
+    def delete(self, *args):
+        self.deleted.append(args)
+
+    def after(self, delay, callback):
+        self.after_calls.append((delay, callback))
+        self._next_after += 1
+        return f"after-{self._next_after}"
+
+    def after_cancel(self, token):
+        self.after_cancel_calls.append(token)
+
+    def winfo_width(self):
+        return int(self.kwargs.get("width", 0) or 0)
+
+    def winfo_exists(self):
+        return 0 if self._destroyed else 1
+
+    def destroy(self):
+        self._destroyed = True
 
 
 class FakeText:
@@ -209,6 +249,26 @@ class FakeFrame:
         self.pack_calls.append(kwargs)
 
 
+class FakeLabel:
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.pack_calls = []
+        self.bind_calls = []
+        FakeLabel.instances.append(self)
+
+    def pack(self, *args, **kwargs):
+        self.pack_calls.append(kwargs)
+
+    def bind(self, event, callback):
+        self.bind_calls.append((event, callback))
+
+    def configure(self, **kwargs):
+        self.kwargs.update(kwargs)
+
+
 def test_workflow_window_chooser_stays_open_after_file_pick(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
@@ -216,7 +276,6 @@ def test_workflow_window_chooser_stays_open_after_file_pick(tmp_path, monkeypatc
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
-    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Progressbar", FakeProgressbar)
     picked = []
     monkeypatch.setattr("summarizeaudio.workflow_window._native_audio_picker", lambda title: picked.append(title) or "/tmp/example.mp3")
 
@@ -242,7 +301,6 @@ def test_workflow_window_chooser_has_no_spinner(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
-    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Progressbar", FakeProgressbar)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     class FakeWidget:
         def __init__(self, *args, **kwargs):
@@ -256,12 +314,11 @@ def test_workflow_window_chooser_has_no_spinner(tmp_path, monkeypatch):
 
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeWidget)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeWidget)
-    FakeProgressbar.started = 0
 
     window = workflow_window.WorkflowWindow("audio")
     window._render()
 
-    assert FakeProgressbar.started == 0
+    assert window._progress is None
 
 
 def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
@@ -343,26 +400,40 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
-    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Progressbar", FakeProgressbar)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Canvas", FakeCanvas)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     FakeStyle.instances.clear()
-    FakeProgressbar.started = 0
+    FakeCanvas.instances.clear()
 
     window = workflow_window.WorkflowWindow("audio")
     window._state = "processing"
     window._step_state = "processing"
     window._render()
 
-    style = FakeStyle.instances[-1]
-    progress_calls = [call for call in style.configured if call[0] == ("Progress.Horizontal.TProgressbar",)]
-    assert progress_calls
-    assert progress_calls[-1][1]["background"] == "#222222"
-    assert progress_calls[-1][1]["thickness"] == 16
-    assert FakeProgressbar.started == 1
-    assert window._progress.start_args == (20,)
-    assert window._progress.kwargs["length"] == 2700
+    assert FakeCanvas.instances
+    canvas = FakeCanvas.instances[-1]
+    assert canvas.kwargs["height"] == 16
+    assert canvas.kwargs["width"] == 1320
+    assert canvas.after_calls
+    assert canvas.after_calls[-1][0] == 16
+    assert window._progress._track_color == "#e7ebf2"
+    assert window._progress._bar_color == "#222222"
+    assert window._progress._interval == 16
+    assert window._progress._step == 4
+    assert 300 <= window._progress._bar_width <= 420
+    max_x = canvas.kwargs["width"] - window._progress._bar_width
+    window._progress._bar_x = max_x
+    window._progress._direction = 1
+    window._progress._tick()
+    assert window._progress._bar_x == max_x
+    assert window._progress._direction == -1
+    window._progress._bar_x = 0
+    window._progress._direction = -1
+    window._progress._tick()
+    assert window._progress._bar_x == 0
+    assert window._progress._direction == 1
 
 
 def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypatch):
@@ -373,15 +444,25 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
-    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeLabel)
     monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     FakeText.instances.clear()
     FakeButton.instances.clear()
+    FakeLabel.instances.clear()
 
-    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
-    summary_path.parent.mkdir(parents=True)
+    summary_dir = tmp_path / "SummaryFiles"
+    transcript_dir = tmp_path / "TranscriptionFiles"
+    audio_dir = tmp_path / "AudioFiles"
+    summary_dir.mkdir(parents=True)
+    transcript_dir.mkdir(parents=True)
+    audio_dir.mkdir(parents=True)
+    summary_path = summary_dir / "Summary - Topic_05-08-26.md"
     summary_path.write_text("summary content", encoding="utf-8")
+    transcript_path = transcript_dir / "Transcript_Topic_05-08-26.txt"
+    transcript_path.write_text("transcript content", encoding="utf-8")
+    audio_path = audio_dir / "Audio_Topic_05-08-26.mp3"
+    audio_path.write_text("audio content", encoding="utf-8")
     window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
     window._summary_path = summary_path
     window._summary_preview = "summary content"
@@ -390,7 +471,8 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
 
     assert FakeText.instances
     assert FakeText.instances[-1].kwargs["height"] == 8
-    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Open Summary", "Close"]
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Open Transcript", "Open Recording", "Close"]
+    assert all(label.kwargs.get("text") != str(summary_path) for label in FakeLabel.instances)
 
 
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
