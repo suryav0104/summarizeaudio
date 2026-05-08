@@ -60,10 +60,16 @@ class HistoryWindow:
             rowheight=38,
             font=("Helvetica Neue", 13),
         )
-        style.configure("SummarizeAudio.Treeview.Heading", font=("Helvetica Neue", 14, "bold"))
+        style.configure(
+            "SummarizeAudio.Treeview.Heading",
+            font=("Helvetica Neue", 14, "bold"),
+            padding=(34, 10, 14, 10),
+            background="#f5f7fb",
+            foreground="#000000",
+        )
         style.map(
             "SummarizeAudio.Treeview",
-            background=[("selected", "#d9dde4")],
+            background=[("selected", "#e4e7ec")],
             foreground=[("selected", "#162033")],
         )
         style.configure("Link.TLabel", background="white", foreground="#2e72ff")
@@ -177,7 +183,7 @@ class HistoryWindow:
         header_row.pack(fill="x")
         title = "Archived History" if self._show_archived else "History"
         ttk.Label(header_row, text=title, style="Title.TLabel").pack(side="left", anchor="w")
-        toggle_label = "Archived Sessions" if not self._show_archived else "Live Sessions"
+        toggle_label = "Archive" if not self._show_archived else "Active"
         self._button(header_row, text=toggle_label, command=self._toggle_archived_filter, primary=False).pack(side="right")
         body = self._clear_body()
         if not self._sessions:
@@ -187,7 +193,7 @@ class HistoryWindow:
             ttk.Label(body, text=empty_detail, style="Detail.TLabel").pack(anchor="w", pady=(8, 16))
             actions = ttk.Frame(body, style="Card.TFrame")
             actions.pack(fill="x")
-            self._button(actions, text="Close", command=self._close, primary=True).pack(side="left")
+            self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
             return
 
         list_shell = ttk.Frame(body, style="Card.TFrame")
@@ -225,10 +231,6 @@ class HistoryWindow:
         self._detail_card = ttk.Frame(bottom, style="Card.TFrame")
         self._detail_card.pack(fill="both", expand=True)
         self._render_selected_session()
-
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(12, 0))
-        self._button(actions, text="Close", command=self._close, primary=False).pack(side="left")
 
     def _toggle_archived_filter(self) -> None:
         self._show_archived = not self._show_archived
@@ -307,6 +309,7 @@ class HistoryWindow:
                 command=lambda s=session: self._toggle_archive(s),
                 primary=False,
             ).pack(side="left", padx=(8, 0))
+        self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
 
     def _toggle_archive(self, session: "SessionFiles") -> None:
         archive_session(session.id, archived=not session.archived)

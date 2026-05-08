@@ -116,6 +116,25 @@ class FakeButton:
         self.pack_calls.append((args, kwargs))
 
 
+class FakeStyle:
+    instances = []
+
+    def __init__(self):
+        self.configs = {}
+        self.maps = {}
+        self.themes = []
+        FakeStyle.instances.append(self)
+
+    def theme_use(self, *args, **kwargs):
+        self.themes.append((args, kwargs))
+
+    def configure(self, name, **kwargs):
+        self.configs[name] = kwargs
+
+    def map(self, name, **kwargs):
+        self.maps[name] = kwargs
+
+
 def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
     transcript = tmp_path / "TranscriptionFiles" / "Transcript_Topic_05-08-26.txt"
@@ -165,7 +184,7 @@ def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     window._render_selected_session()
 
     button_texts = [btn.kwargs["text"] for btn in FakeButton.instances]
-    assert button_texts == ["Open Summary", "Open Transcript", "Open Recording", "Archive"]
+    assert button_texts == ["Open Summary", "Open Transcript", "Open Recording", "Archive", "Close"]
     assert not any(label.kwargs.get("text") == "Sessions" for label in FakeLabel.instances)
     assert any(label.kwargs.get("text") == "Date: 05-08-26" for label in FakeLabel.instances)
     location_label = next(label for label in FakeLabel.instances if label.kwargs.get("text") == str(summary.parent))
@@ -220,7 +239,7 @@ def test_history_window_renders_unarchive_for_archived_session(tmp_path, monkeyp
     window._render_selected_session()
 
     button_texts = [btn.kwargs["text"] for btn in FakeButton.instances]
-    assert button_texts[-1] == "Unarchive"
+    assert button_texts[-2:] == ["Unarchive", "Close"]
     assert any(label.kwargs.get("text") == "Archived" for label in FakeLabel.instances)
 
 
@@ -345,6 +364,103 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
     assert FakeTreeview.instances[0]._seen == "0"
 
 
+def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monkeypatch):
+    summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("summary")
+
+    class FakeRoot:
+        def __init__(self):
+            self.children = []
+            self.geometry_value = None
+            self.minsize_value = None
+
+        def withdraw(self):
+            pass
+
+        def title(self, *_args):
+            pass
+
+        def geometry(self, value):
+            self.geometry_value = value
+
+        def minsize(self, *args):
+            self.minsize_value = args
+
+        def resizable(self, *args):
+            pass
+
+        def configure(self, *args, **kwargs):
+            pass
+
+        def protocol(self, *args):
+            pass
+
+        def update_idletasks(self):
+            pass
+
+        def winfo_screenwidth(self):
+            return 1920
+
+        def winfo_screenheight(self):
+            return 1080
+
+        def lift(self):
+            pass
+
+        def attributes(self, *args):
+            pass
+
+        def after(self, *args):
+            pass
+
+        def focus_force(self):
+            pass
+
+        def mainloop(self):
+            pass
+
+        def destroy(self):
+            pass
+
+        def winfo_children(self):
+            return self.children
+
+    monkeypatch.setattr("summarizeaudio.history_window.load_config", lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})())
+    monkeypatch.setattr(
+        "summarizeaudio.history_window.load_sessions",
+        lambda root, limit=None, include_archived=False: [
+            SessionFiles(
+                label="Topic (05-08-26)",
+                date="05-08-26",
+                folder=summary.parent,
+                summary=summary,
+                transcript=None,
+                audio=None,
+                archived=False,
+            )
+        ],
+    )
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Scrollbar", FakeScrollbar)
+    monkeypatch.setattr("summarizeaudio.history_window.ttk.Treeview", FakeTreeview)
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Button", FakeButton)
+    FakeStyle.instances.clear()
+    FakeTreeview.instances.clear()
+    FakeLabel.instances.clear()
+    FakeButton.instances.clear()
+
+    history_window.HistoryWindow()
+
+    style = FakeStyle.instances[0]
+    assert style.configs["SummarizeAudio.Treeview.Heading"]["padding"] == (34, 10, 14, 10)
+    assert style.configs["SummarizeAudio.Treeview.Heading"]["foreground"] == "#000000"
+    assert style.maps["SummarizeAudio.Treeview"]["background"] == [("selected", "#e4e7ec")]
+
+
 def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkeypatch):
     active_summary = tmp_path / "SummaryFiles" / "Summary - Active_05-10-26.md"
     archived_summary = tmp_path / "SummaryFiles" / "Summary - Archived_05-08-26.md"
@@ -459,7 +575,7 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
 
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].items == [("0", "Active (05-10-26)", ("05-10-26",), ("row_even",))]
-    assert any(btn.kwargs.get("text") == "Archived Sessions" for btn in FakeButton.instances)
+    assert any(btn.kwargs.get("text") == "Archive" for btn in FakeButton.instances)
 
     FakeTreeview.instances.clear()
     FakeLabel.instances.clear()
@@ -468,10 +584,10 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
 
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].items == [("0", "Archived (05-08-26)", ("05-08-26",), ("row_even",))]
-    assert any(btn.kwargs.get("text") == "Live Sessions" for btn in FakeButton.instances)
+    assert any(btn.kwargs.get("text") == "Active" for btn in FakeButton.instances)
 
 
-def test_history_window_close_button_is_left_aligned(tmp_path, monkeypatch):
+def test_history_window_close_button_is_right_aligned(tmp_path, monkeypatch):
     summary = tmp_path / "SummaryFiles" / "Summary - Topic_05-08-26.md"
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
@@ -554,7 +670,7 @@ def test_history_window_close_button_is_left_aligned(tmp_path, monkeypatch):
     window._render()
 
     close_button = next(btn for btn in FakeButton.instances if btn.kwargs.get("text") == "Close")
-    assert close_button.pack_calls[-1][1]["side"] == "left"
+    assert close_button.pack_calls[-1][1]["side"] == "right"
 
 
 def test_history_window_open_file_uses_open_on_macos(tmp_path, monkeypatch):
