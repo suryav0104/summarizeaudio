@@ -50,7 +50,7 @@ class Transcriber:
                 )
                 raise
 
-    def transcribe(self, audio_path: Path, out_txt: Path) -> None:
+    def transcribe(self, audio_path: Path, out_txt: Path, on_progress=None) -> None:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         self._load_model()
@@ -58,9 +58,15 @@ class Transcriber:
         log.info("Transcribing %s (language=%s)", audio_path.name, lang)
         try:
             segments, info = self._model.transcribe(str(audio_path), language=lang)
+            duration = getattr(info, "duration", 0) or 0
             log.info("Transcription detected language=%s duration=%.1fs",
-                     getattr(info, "language", "?"), getattr(info, "duration", 0))
-            text = " ".join(seg.text.strip() for seg in segments)
+                     getattr(info, "language", "?"), duration)
+            parts: list[str] = []
+            for seg in segments:
+                parts.append(seg.text.strip())
+                if on_progress is not None and duration > 0:
+                    on_progress(min(100.0, seg.end / duration * 100))
+            text = " ".join(parts)
             out_txt.write_text(text, encoding="utf-8")
             log.info("Transcription written: %d chars → %s", len(text), out_txt)
         except Exception as exc:

@@ -199,6 +199,8 @@ class WorkflowWindow:
         self._content = None
         self._body = None
         self._progress = None
+        self._det_progress_bar: ttk.Progressbar | None = None
+        self._transcription_pct: float = 0.0
         self._text_font = ("Helvetica Neue", 14)
         self._button_font = ("Helvetica Neue", 13, "bold")
         self._button_bg = "#f6f8fb"
@@ -210,13 +212,18 @@ class WorkflowWindow:
         self._button_accent_fg = "#000000"
 
     def _stop_progress(self) -> None:
-        if self._progress is None:
-            return
-        try:
-            self._progress.stop()
-        except Exception:
-            pass
-        self._progress = None
+        if self._progress is not None:
+            try:
+                self._progress.stop()
+            except Exception:
+                pass
+            self._progress = None
+        if self._det_progress_bar is not None:
+            try:
+                self._det_progress_bar.destroy()
+            except Exception:
+                pass
+            self._det_progress_bar = None
 
     def run(self) -> int:
         self._render()
@@ -378,14 +385,23 @@ class WorkflowWindow:
         ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(8, 14))
 
         if self._state == "processing":
-            self._progress = _MarqueeProgress(
-                body,
-                width=max(960, self._window_width - 120),
-            )
-            self._progress.pack(fill="x", pady=(0, 18))
-            self._progress.start()
+            if self._step_state == "summarizing":
+                self._det_progress_bar = None
+                self._progress = _MarqueeProgress(
+                    body,
+                    width=max(960, self._window_width - 120),
+                )
+                self._progress.pack(fill="x", pady=(0, 18))
+                self._progress.start()
+            else:
+                self._progress = None
+                self._det_progress_bar = ttk.Progressbar(
+                    body, mode="determinate", maximum=100, value=self._transcription_pct
+                )
+                self._det_progress_bar.pack(fill="x", pady=(0, 18))
         else:
             self._progress = None
+            self._det_progress_bar = None
 
         if self._state == "chooser":
             self._render_chooser(body)
@@ -780,6 +796,11 @@ class WorkflowWindow:
             self._detail_text = f"The summary was saved to:\n{path}"
             self._render()
             self._raise_window()
+        elif kind == "transcription_progress":
+            _, pct = item
+            self._transcription_pct = pct
+            if self._det_progress_bar is not None:
+                self._det_progress_bar["value"] = pct
         elif kind == "workflow_phase":
             _, phase = item
             if phase == "summarizing":

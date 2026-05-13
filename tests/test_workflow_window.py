@@ -410,7 +410,7 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
 
     window = workflow_window.WorkflowWindow("audio")
     window._state = "processing"
-    window._step_state = "processing"
+    window._step_state = "summarizing"
     window._render()
 
     assert FakeCanvas.instances

@@ -348,8 +348,14 @@ class Pipeline:
                 audio_path=mp3_path if mode == PipelineMode.RECORD else temp_audio_copy,
                 status="in_progress",
             )
+        def _on_transcription_progress(pct: float) -> None:
+            try:
+                self._ui_queue.put_nowait(("transcription_progress", pct))
+            except queue.Full:
+                pass
+
         try:
-            transcriber.transcribe(transcription_source, tmp_txt)
+            transcriber.transcribe(transcription_source, tmp_txt, on_progress=_on_transcription_progress)
         except Exception as exc:
             log.exception("Transcription failed for %s", audio_for_transcription)
             update_session_record(

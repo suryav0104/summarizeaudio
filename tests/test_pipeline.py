@@ -83,7 +83,7 @@ def test_mode1_produces_three_output_files(tmp_output, ui_queue, monkeypatch):
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("fake transcript content for testing purposes", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("fake transcript content for testing purposes", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     mp3 = make_silence_mp3(tmp_output / "session.mp3")
@@ -113,7 +113,7 @@ def test_mode1_default_name_comes_from_summary_topic(tmp_output, ui_queue, monke
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     monkeypatch.setattr("summarizeaudio.summarizer.Summarizer.summarize", fake_summarize)
     cfg = make_config(tmp_output)
@@ -145,7 +145,7 @@ def test_mode1_posts_summarizing_phase_before_name_dialog(tmp_output, monkeypatc
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     monkeypatch.setattr("summarizeaudio.summarizer.Summarizer.summarize", fake_summarize)
     cfg = make_config(tmp_output)
@@ -179,7 +179,7 @@ def test_partial_session_is_saved_before_summarization_completes(tmp_output, ui_
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     monkeypatch.setattr("summarizeaudio.summarizer.Summarizer.summarize", failing_summarize)
     cfg = make_config(tmp_output)
@@ -199,7 +199,7 @@ def test_mode2_does_not_touch_source_file(tmp_output, ui_queue, monkeypatch):
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     source = make_silence_mp3(tmp_output / "source_audio.mp3")
@@ -213,7 +213,7 @@ def test_mode2_copies_source_audio_to_local_temp_file(tmp_output, ui_queue, monk
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     copied = []
 
@@ -312,7 +312,7 @@ def test_pipeline_override_dismissed_produces_no_summary(tmp_output, ui_queue, m
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("transcript content long enough to summarize", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     cfg.behavior.show_override_dialog = True
@@ -353,7 +353,7 @@ def test_transcription_failure_posts_error_and_preserves_mp3(tmp_output, ui_queu
 def test_too_short_transcript_posts_centered_info_dialog(tmp_output, ui_queue, monkeypatch):
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("...", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("...", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     mp3 = make_silence_mp3(tmp_output / "short.mp3")
@@ -371,7 +371,7 @@ def test_too_short_transcript_posts_centered_info_dialog(tmp_output, ui_queue, m
 def test_mode2_too_short_transcript_mentions_selected_file(tmp_output, ui_queue, monkeypatch):
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, audio, out_txt: out_txt.write_text("...", encoding="utf-8"),
+        lambda self, audio, out_txt, **kwargs: out_txt.write_text("...", encoding="utf-8"),
     )
     cfg = make_config(tmp_output)
     source = make_silence_mp3(tmp_output / "short_source.mp3")
