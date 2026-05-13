@@ -198,23 +198,32 @@ class TrayApp:
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
-    def run(self) -> None:
-        """Runs the pystray icon loop. Blocks until the icon is stopped.
+    def _create_icon(self) -> None:
+        """Creates the pystray Icon and rebuilds the menu.
 
-        On macOS this is called from a background daemon thread (started in
-        __main__.py), leaving the main thread free for tk.mainloop().
-        On Windows/Linux it is also called from a background thread.
+        Must be called from the main thread on macOS — NSStatusItem creation
+        requires the main thread on Tahoe and later.
         """
+        kwargs: dict = {}
+        if sys.platform == "darwin":
+            try:
+                import AppKit
+                # By this point tk.Tk() has already created TKApplication
+                # (Tk's NSApplication subclass, which defines macOSVersion and
+                # other selectors). Passing it here tells pystray to use that
+                # existing NSApplication rather than creating a new one.
+                kwargs["nsapplication"] = AppKit.NSApplication.sharedApplication()
+            except Exception:
+                pass
         self._tray = pystray.Icon(
             "SummarizeAudio",
             icon=self._icons["idle"],
             title="SummarizeAudio",
+            **kwargs,
         )
         self._rebuild_menu()
 
-        def setup(icon: pystray.Icon) -> None:
-            icon.visible = True
-
+    def _setup_signals(self) -> None:
         def _handle_signal(sig, frame) -> None:
             LOCK_FILE.unlink(missing_ok=True)
             self._stop_event.set()
@@ -227,7 +236,27 @@ class TrayApp:
 
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
-        self._tray.run(setup=setup)
+
+    def run(self) -> None:
+        """Runs the pystray icon loop (Windows/Linux background thread path)."""
+        self._create_icon()
+        self._setup_signals()
+        self._tray.run(setup=lambda icon: setattr(icon, "visible", True))
+
+    def run_detached(self) -> None:
+        """Starts pystray without its own event loop (macOS main-thread path).
+
+        Must be called from the main thread before entering Tk's mainloop.
+        Tk drives the shared NSApplication event loop, so pystray status bar
+        events are delivered through it automatically.
+        """
+        self._create_icon()
+        self._setup_signals()
+        root = self._window_manager.root
+        # icon.visible = True triggers an NSView update; dispatch to main thread.
+        self._tray.run_detached(
+            setup=lambda icon: root.after(0, lambda: setattr(icon, "visible", True))
+        )
 
 
 def _check_single_instance() -> None:
@@ -257,8 +286,13 @@ def run() -> None:
     try:
         _check_single_instance()
         app = TrayApp()
-        tray_thread = threading.Thread(target=app.run, daemon=True)
-        tray_thread.start()
+        if sys.platform == "darwin":
+            # On macOS, NSStatusItem must be created on the main thread and
+            # pystray must not run its own NSApp event loop (Tk owns it).
+            app.run_detached()
+        else:
+            tray_thread = threading.Thread(target=app.run, daemon=True)
+            tray_thread.start()
         app.window_manager.root.mainloop()
     except Exception:
         msg = format_error("startup", "SummarizeAudio could not start.", traceback.format_exc())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -29,6 +30,18 @@ class WindowManager:
         self._ui_queue = ui_queue
         self._on_icon_state = on_icon_state
         self._root = tk.Tk()
+        # Set accessory policy AFTER tk.Tk() so Tk has already created its
+        # TKApplication subclass (which defines macOSVersion and other selectors
+        # that newer NSApplication bottles check for). Setting it before Tk
+        # initialises creates a plain NSApplication that lacks those selectors
+        # and crashes on macOS Tahoe beta.
+        if sys.platform == "darwin":
+            try:
+                import AppKit
+                nsapp = AppKit.NSApplication.sharedApplication()
+                nsapp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+            except Exception:
+                pass
         self._root.withdraw()
         self._root.after(100, self._pump)
         self._workflow_win: WorkflowWindow | None = None
