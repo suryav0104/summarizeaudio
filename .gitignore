@@ -31,3 +31,4 @@ config.toml
 # IDE
 .idea/
 .vscode/
+.superpowers/
