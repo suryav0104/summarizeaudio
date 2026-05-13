@@ -127,17 +127,17 @@ def test_summarizer_ollama_connection_error_raises_ollama_error(tmp_path, ui_que
     assert not out_md.exists()
 
 
-def test_summarizer_rejects_malformed_summary(tmp_path, ui_queue):
+def test_summarizer_writes_malformed_summary_without_error(tmp_path, ui_queue):
     s = make_summarizer(tmp_path, ui_queue)
     out_md = tmp_path / "summary.md"
     with patch("requests.post") as mock_post:
         mock_post.return_value = mock_ollama_response("This is just a paragraph with no sections.")
-        with pytest.raises(OllamaError):
-            s.summarize("text", out_md)
-    assert not out_md.exists()
+        s.summarize("text", out_md)
+    assert out_md.exists()
+    assert out_md.read_text() == "This is just a paragraph with no sections."
 
 
-def test_summarizer_normalizes_heading_variants_and_spacing(tmp_path, ui_queue):
+def test_summarizer_writes_raw_output_without_normalization(tmp_path, ui_queue):
     s = make_summarizer(tmp_path, ui_queue)
     out_md = tmp_path / "summary.md"
     raw = (
@@ -154,6 +154,6 @@ def test_summarizer_normalizes_heading_variants_and_spacing(tmp_path, ui_queue):
         mock_post.return_value = mock_ollama_response(raw)
         s.summarize("text", out_md)
     written = out_md.read_text()
-    assert written.startswith("**Key Points:**\n- One.")
-    assert "**Decisions / Action Items:**" in written
-    assert "**Notable Details:**" in written
+    assert "Key Points" in written
+    assert "Decisions / Action Items" in written
+    assert "Notable Details" in written

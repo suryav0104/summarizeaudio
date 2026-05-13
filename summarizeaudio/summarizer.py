@@ -131,17 +131,7 @@ class Summarizer:
             _open_file(out_md)
 
     def _validate_summary(self, summary: str) -> str:
-        normalized = _normalize_summary_text(summary)
-        missing = [heading for heading in _SUMMARY_SECTION_ORDER if heading.lower() not in normalized.lower()]
-        if missing:
-            raise OllamaError(
-                friendly_message(
-                    "summarizer.py → output validation",
-                    "Summary validation failed: missing required summary sections.",
-                    "",
-                )
-            )
-        return normalized
+        return summary.strip()
 
     def _summarize_prompt(self, prompt: str) -> str:
         log.info("POSTing to Ollama %s/api/generate (model=%s)", self._ollama.host, self._ollama.model)
