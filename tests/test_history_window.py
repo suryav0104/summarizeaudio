@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import queue as queue_mod
 from pathlib import Path
+from types import SimpleNamespace
 
 from summarizeaudio import history_window
 from summarizeaudio.sessions import SessionFiles, display_session_label
@@ -163,7 +165,7 @@ def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     window._selected_index = 0
     window._detail_card = FakeFrame()
     window._button = history_window.HistoryWindow._button.__get__(window, history_window.HistoryWindow)
-    window._button_font = ("Helvetica Neue", 13, "bold")
+    window._button_font = ("Helvetica Neue", 12, "bold")
     window._button_bg = "#f6f8fb"
     window._button_fg = "#000000"
     window._button_secondary_bg = "#edf2f9"
@@ -222,7 +224,7 @@ def test_history_window_renders_unarchive_for_archived_session(tmp_path, monkeyp
     window._selected_index = 0
     window._detail_card = FakeFrame()
     window._button = history_window.HistoryWindow._button.__get__(window, history_window.HistoryWindow)
-    window._button_font = ("Helvetica Neue", 13, "bold")
+    window._button_font = ("Helvetica Neue", 12, "bold")
     window._button_bg = "#f6f8fb"
     window._button_fg = "#000000"
     window._button_secondary_bg = "#edf2f9"
@@ -273,7 +275,7 @@ def test_history_window_renders_retry_actions_for_partial_sessions(tmp_path, mon
     window._selected_index = 0
     window._detail_card = FakeFrame()
     window._button = history_window.HistoryWindow._button.__get__(window, history_window.HistoryWindow)
-    window._button_font = ("Helvetica Neue", 13, "bold")
+    window._button_font = ("Helvetica Neue", 12, "bold")
     window._button_bg = "#f6f8fb"
     window._button_fg = "#000000"
     window._button_secondary_bg = "#edf2f9"
@@ -283,8 +285,6 @@ def test_history_window_renders_retry_actions_for_partial_sessions(tmp_path, mon
     window._button_accent_fg = "#000000"
     window._open_file = lambda path: path
     window._reveal_in_finder = lambda path: path
-    window._launch_workflow = lambda mode, source: (mode, source)
-    window._close = lambda: None
 
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -300,59 +300,43 @@ def test_history_window_renders_retry_actions_for_partial_sessions(tmp_path, mon
     assert "Retry Summarization" in button_texts or "Retry Transcription" in button_texts
 
 
-def test_retry_launch_refreshes_history_when_workflow_exits(monkeypatch, tmp_path):
-    class FakeRoot:
-        def __init__(self):
-            self.withdraw_called = False
-            self.deiconified = False
-            self.lifted = False
-            self.focused = False
-            self.after_calls = []
+def test_retry_posts_show_workflow_to_queue_and_withdraws(tmp_path):
+    recording = tmp_path / "AudioFiles" / "Audio - Recording 05-08-26.mp3"
+    recording.parent.mkdir(parents=True)
+    recording.write_text("audio")
 
-        def withdraw(self):
-            self.withdraw_called = True
-
-        def after(self, _delay, callback):
-            self.after_calls.append(callback)
-            callback()
-
-        def winfo_exists(self):
-            return True
-
-        def deiconify(self):
-            self.deiconified = True
-
-        def lift(self):
-            self.lifted = True
-
-        def focus_force(self):
-            self.focused = True
-
-    class FakeProc:
-        def wait(self):
-            return 0
-
+    ui_queue = queue_mod.Queue()
     window = history_window.HistoryWindow.__new__(history_window.HistoryWindow)
-    window._root = FakeRoot()
-    window._reload_sessions = lambda selected_id=None: setattr(window, "_reloaded", selected_id)
-    window._render = lambda: setattr(window, "_rendered", True)
+    window._ui_queue = ui_queue
 
-    captured = {}
+    withdraw_calls = []
 
-    def fake_popen(cmd, stdout=None, stderr=None):
-        captured["cmd"] = cmd
-        return FakeProc()
+    class FakeWin:
+        def withdraw(self):
+            withdraw_calls.append(True)
 
-    monkeypatch.setattr(history_window.subprocess, "Popen", fake_popen)
+    window._win = FakeWin()
 
-    window._launch_workflow("text", tmp_path / "Transcript.txt", resume_session_id="session-123")
+    session = SessionFiles(
+        label="Recording (05-08-26)",
+        date="05-08-26",
+        folder=tmp_path,
+        summary=None,
+        transcript=None,
+        audio=recording,
+        status="partial",
+        archived=False,
+        source_path=recording,
+    )
 
-    # the background watcher should have refreshed the window after exit
-    assert window._root.deiconified is True
-    assert window._root.lifted is True
-    assert window._root.focused is True
-    assert window._rendered is True
-    assert captured["cmd"][-2:] == ["--resume-session-id", "session-123"]
+    window._resume_audio_session(session)
+
+    assert withdraw_calls
+    item = ui_queue.get_nowait()
+    assert item[0] == "show_workflow"
+    assert item[1] == "audio"
+    assert item[2] == recording
+    assert item[3] == session.id
 
 
 def test_history_window_omits_missing_actions(tmp_path):
@@ -436,7 +420,6 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
         def winfo_children(self):
             return self.children
 
-    monkeypatch.setattr("summarizeaudio.history_window.load_config", lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})())
     monkeypatch.setattr(
         "summarizeaudio.history_window.load_sessions",
         lambda root, limit=None, include_archived=False: [
@@ -451,7 +434,7 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
             )
         ],
     )
-    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Toplevel", lambda root: FakeRoot())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: type("S", (), {"theme_use": lambda *a, **k: None, "configure": lambda *a, **k: None, "map": lambda *a, **k: None})())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -461,11 +444,11 @@ def test_history_window_renders_date_column(tmp_path, monkeypatch):
     FakeTreeview.instances.clear()
     FakeLabel.instances.clear()
 
-    window = history_window.HistoryWindow()
+    window = history_window.HistoryWindow(SimpleNamespace(), SimpleNamespace(storage=SimpleNamespace(output_folder=tmp_path)), queue_mod.Queue())
     window._render()
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
     assert FakeTreeview.instances[0].kwargs["show"] == "headings"
-    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].kwargs["height"] == 8
     assert FakeTreeview.instances[0].items == [("0", "", ("  Topic", "  05-08-26"), ("row_even",))]
     assert FakeTreeview.instances[0].heading_calls[0][1]["text"] == "Session"
     assert FakeTreeview.instances[0].heading_calls[0][1]["anchor"] == "w"
@@ -551,7 +534,6 @@ def test_history_window_marks_partial_and_failed_sessions(tmp_path, monkeypatch)
         def winfo_children(self):
             return self.children
 
-    monkeypatch.setattr("summarizeaudio.history_window.load_config", lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})())
     monkeypatch.setattr(
         "summarizeaudio.history_window.load_sessions",
         lambda root, limit=None, include_archived=False: [
@@ -587,7 +569,7 @@ def test_history_window_marks_partial_and_failed_sessions(tmp_path, monkeypatch)
             ),
         ],
     )
-    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Toplevel", lambda root: FakeRoot())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: type("S", (), {"theme_use": lambda *a, **k: None, "configure": lambda *a, **k: None, "map": lambda *a, **k: None})())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -597,7 +579,7 @@ def test_history_window_marks_partial_and_failed_sessions(tmp_path, monkeypatch)
     FakeTreeview.instances.clear()
     FakeLabel.instances.clear()
 
-    window = history_window.HistoryWindow()
+    window = history_window.HistoryWindow(SimpleNamespace(), SimpleNamespace(storage=SimpleNamespace(output_folder=tmp_path)), queue_mod.Queue())
     window._render()
 
     assert FakeTreeview.instances[0].items == [
@@ -669,7 +651,6 @@ def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monke
         def winfo_children(self):
             return self.children
 
-    monkeypatch.setattr("summarizeaudio.history_window.load_config", lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})())
     monkeypatch.setattr(
         "summarizeaudio.history_window.load_sessions",
         lambda root, limit=None, include_archived=False: [
@@ -684,7 +665,7 @@ def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monke
             )
         ],
     )
-    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Toplevel", lambda root: FakeRoot())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -696,10 +677,10 @@ def test_history_window_uses_neutral_header_and_selection_colors(tmp_path, monke
     FakeLabel.instances.clear()
     FakeButton.instances.clear()
 
-    history_window.HistoryWindow()
+    history_window.HistoryWindow(SimpleNamespace(), SimpleNamespace(storage=SimpleNamespace(output_folder=tmp_path)), queue_mod.Queue())
 
     style = FakeStyle.instances[0]
-    assert style.configs["SummarizeAudio.Treeview.Heading"]["padding"] == (12, 10, 14, 10)
+    assert style.configs["SummarizeAudio.Treeview.Heading"]["padding"] == (10, 8, 12, 8)
     assert style.configs["SummarizeAudio.Treeview.Heading"]["foreground"] == "#000000"
     assert style.maps["SummarizeAudio.Treeview"]["background"] == [("selected", "#cbd2dd")]
 
@@ -712,10 +693,6 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     active_summary.write_text("active")
     archived_summary.write_text("archived")
 
-    monkeypatch.setattr(
-        "summarizeaudio.history_window.load_config",
-        lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})(),
-    )
     monkeypatch.setattr(
         "summarizeaudio.history_window.load_sessions",
         lambda root, limit=None, include_archived=False: [
@@ -802,7 +779,7 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
         def winfo_children(self):
             return self.children
 
-    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Toplevel", lambda root: FakeRoot())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: type("S", (), {"theme_use": lambda *a, **k: None, "configure": lambda *a, **k: None, "map": lambda *a, **k: None})())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -813,12 +790,12 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
     FakeLabel.instances.clear()
     FakeButton.instances.clear()
 
-    window = history_window.HistoryWindow()
+    window = history_window.HistoryWindow(SimpleNamespace(), SimpleNamespace(storage=SimpleNamespace(output_folder=tmp_path)), queue_mod.Queue())
     window._render()
 
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
-    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].kwargs["height"] == 8
     assert FakeTreeview.instances[0].items == [("0", "", ("  Active", "  05-10-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Archived Sessions" for btn in FakeButton.instances)
 
@@ -829,7 +806,7 @@ def test_history_window_renders_only_one_list_and_toggles_modes(tmp_path, monkey
 
     assert len(FakeTreeview.instances) == 1
     assert FakeTreeview.instances[0].kwargs["columns"] == ("session", "date")
-    assert FakeTreeview.instances[0].kwargs["height"] == 12
+    assert FakeTreeview.instances[0].kwargs["height"] == 8
     assert FakeTreeview.instances[0].items == [("0", "", ("  Archived", "  05-08-26"), ("row_even",))]
     assert any(btn.kwargs.get("text") == "Active Sessions" for btn in FakeButton.instances)
 
@@ -839,10 +816,6 @@ def test_history_window_close_button_is_right_aligned(tmp_path, monkeypatch):
     summary.parent.mkdir(parents=True)
     summary.write_text("summary")
 
-    monkeypatch.setattr(
-        "summarizeaudio.history_window.load_config",
-        lambda: type("Cfg", (), {"storage": type("S", (), {"output_folder": tmp_path})()})(),
-    )
     monkeypatch.setattr(
         "summarizeaudio.history_window.load_sessions",
         lambda root, limit=None, include_archived=False: [],
@@ -903,7 +876,7 @@ def test_history_window_close_button_is_right_aligned(tmp_path, monkeypatch):
         def winfo_children(self):
             return self.children
 
-    monkeypatch.setattr("summarizeaudio.history_window.tk.Tk", lambda: FakeRoot())
+    monkeypatch.setattr("summarizeaudio.history_window.tk.Toplevel", lambda root: FakeRoot())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Style", lambda: type("S", (), {"theme_use": lambda *a, **k: None, "configure": lambda *a, **k: None, "map": lambda *a, **k: None})())
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.history_window.ttk.Label", FakeLabel)
@@ -913,7 +886,7 @@ def test_history_window_close_button_is_right_aligned(tmp_path, monkeypatch):
     FakeButton.instances.clear()
     FakeLabel.instances.clear()
 
-    window = history_window.HistoryWindow()
+    window = history_window.HistoryWindow(SimpleNamespace(), SimpleNamespace(storage=SimpleNamespace(output_folder=tmp_path)), queue_mod.Queue())
     window._render()
 
     close_button = next(btn for btn in FakeButton.instances if btn.kwargs.get("text") == "Close")

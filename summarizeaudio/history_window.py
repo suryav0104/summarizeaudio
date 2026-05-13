@@ -1,43 +1,41 @@
 from __future__ import annotations
 
-import argparse
 import os
+import queue
 import subprocess
 import sys
-import threading
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import tkinter as tk
 import tkinter.ttk as ttk
 
-from summarizeaudio.config import load_config
+from summarizeaudio.config import AppConfig
 from summarizeaudio.sessions import archive_session, display_artifact_name, display_session_label, load_sessions, session_action_specs
 
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SummarizeAudio history window.")
-    return parser
+if TYPE_CHECKING:
+    pass
 
 
 class HistoryWindow:
-    def __init__(self) -> None:
-        self._cfg = load_config()
+    def __init__(self, root: tk.Tk, cfg: AppConfig, ui_queue: queue.Queue) -> None:
+        self._cfg = cfg
+        self._ui_queue = ui_queue
         self._sessions: list = []
         self._selected_index = 0
         self._show_archived = False
         self._reload_sessions()
         self._selected_index = 0 if self._sessions else -1
-        self._root = tk.Tk()
-        self._root.withdraw()
-        self._root.title("SummarizeAudio History")
-        self._window_width = 1480
-        self._window_height = 940
-        self._root.geometry(f"{self._window_width}x{self._window_height}")
-        self._root.minsize(1240, 780)
-        self._root.resizable(True, True)
-        self._root.configure(bg="#f5f7fb")
-        self._root.protocol("WM_DELETE_WINDOW", self._close)
+        self._win = tk.Toplevel(root)
+        self._win.withdraw()
+        self._win.title("SummarizeAudio History")
+        self._window_width = 740
+        self._window_height = 520
+        self._win.geometry(f"{self._window_width}x{self._window_height}")
+        self._win.minsize(600, 420)
+        self._win.resizable(True, True)
+        self._win.configure(bg="#f5f7fb")
+        self._win.protocol("WM_DELETE_WINDOW", self.close)
 
         style = ttk.Style()
         try:
@@ -46,11 +44,11 @@ class HistoryWindow:
             pass
         style.configure("SummarizeAudio.TFrame", background="#f5f7fb")
         style.configure("Card.TFrame", background="white")
-        style.configure("Title.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 24, "bold"))
+        style.configure("Title.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 20, "bold"))
         style.configure("Sub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 12))
-        style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 15, "bold"))
-        style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 11))
-        style.configure("Badge.TLabel", background="#eef1f5", foreground="#667084", font=("Helvetica Neue", 11, "bold"))
+        style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 13, "bold"))
+        style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 10))
+        style.configure("Badge.TLabel", background="#eef1f5", foreground="#667084", font=("Helvetica Neue", 10, "bold"))
         style.configure(
             "SummarizeAudio.Treeview",
             background="white",
@@ -59,13 +57,13 @@ class HistoryWindow:
             bordercolor="#d4dce8",
             borderwidth=1,
             relief="solid",
-            rowheight=38,
-            font=("Helvetica Neue", 13),
+            rowheight=32,
+            font=("Helvetica Neue", 12),
         )
         style.configure(
             "SummarizeAudio.Treeview.Heading",
-            font=("Helvetica Neue", 14, "bold"),
-            padding=(12, 10, 14, 10),
+            font=("Helvetica Neue", 12, "bold"),
+            padding=(10, 8, 12, 8),
             background="#f5f7fb",
             foreground="#000000",
         )
@@ -76,7 +74,7 @@ class HistoryWindow:
         )
         style.configure("Link.TLabel", background="white", foreground="#2e72ff")
 
-        self._button_font = ("Helvetica Neue", 13, "bold")
+        self._button_font = ("Helvetica Neue", 12, "bold")
         self._button_bg = "#f6f8fb"
         self._button_fg = "#000000"
         self._button_secondary_bg = "#edf2f9"
@@ -89,6 +87,30 @@ class HistoryWindow:
         self._session_list = None
         self._session_scrollbar = None
         self._detail_card = None
+
+    def show(self) -> None:
+        self._render()
+        self._win.deiconify()
+        self._center()
+        self._focus()
+
+    def refresh(self) -> None:
+        self._reload_sessions()
+        self._render()
+        self._win.deiconify()
+        self._focus()
+
+    def close(self) -> None:
+        try:
+            self._win.destroy()
+        except Exception:
+            pass
+
+    def _focus(self) -> None:
+        self._win.lift()
+        self._win.attributes("-topmost", True)
+        self._win.after(250, lambda: self._win.attributes("-topmost", False))
+        self._win.focus_force()
 
     def _reload_sessions(self, selected_id: str | None = None) -> None:
         self._sessions = load_sessions(
@@ -107,26 +129,15 @@ class HistoryWindow:
         current_index = getattr(self, "_selected_index", 0)
         self._selected_index = min(max(current_index, 0), len(self._sessions) - 1)
 
-    def run(self) -> int:
-        self._render()
-        self._root.deiconify()
-        self._center()
-        self._root.lift()
-        self._root.attributes("-topmost", True)
-        self._root.after(250, lambda: self._root.attributes("-topmost", False))
-        self._root.focus_force()
-        self._root.mainloop()
-        return 0
-
     def _center(self) -> None:
-        self._root.update_idletasks()
+        self._win.update_idletasks()
         w = self._window_width
         h = self._window_height
-        sw = self._root.winfo_screenwidth()
-        sh = self._root.winfo_screenheight()
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
         x = max((sw - w) // 2, 0)
         y = max((sh - h) // 2, 0)
-        self._root.geometry(f"{w}x{h}+{x}+{y}")
+        self._win.geometry(f"{w}x{h}+{x}+{y}")
 
     def _button(self, parent: tk.Misc, *, text: str, command, primary: bool = True) -> tk.Button:
         if primary:
@@ -140,8 +151,8 @@ class HistoryWindow:
                 activeforeground="#000000",
                 relief="flat",
                 bd=0,
-                padx=16,
-                pady=10,
+                padx=14,
+                pady=8,
                 font=self._button_font,
                 highlightthickness=0,
             )
@@ -155,8 +166,8 @@ class HistoryWindow:
             activeforeground=self._button_secondary_fg,
             relief="flat",
             bd=0,
-            padx=16,
-            pady=10,
+            padx=14,
+            pady=8,
             font=self._button_font,
             highlightthickness=1,
             highlightbackground=self._button_border,
@@ -165,21 +176,21 @@ class HistoryWindow:
     def _clear_body(self) -> ttk.Frame:
         if self._content is not None:
             self._content.destroy()
-        self._content = ttk.Frame(self._root, style="SummarizeAudio.TFrame", padding=18)
+        self._content = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=14)
         self._content.pack(fill="both", expand=True)
-        card = ttk.Frame(self._content, style="Card.TFrame", padding=24)
+        card = ttk.Frame(self._content, style="Card.TFrame", padding=18)
         card.pack(fill="both", expand=True)
         return card
 
     def _render(self) -> None:
-        for child in self._root.winfo_children():
+        for child in self._win.winfo_children():
             if child is not self._content:
                 try:
                     child.destroy()
                 except Exception:
                     pass
 
-        header = ttk.Frame(self._root, style="SummarizeAudio.TFrame", padding=(18, 18, 18, 0))
+        header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(14, 14, 14, 0))
         header.pack(fill="x")
         header_row = ttk.Frame(header, style="SummarizeAudio.TFrame")
         header_row.pack(fill="x")
@@ -195,11 +206,11 @@ class HistoryWindow:
             ttk.Label(body, text=empty_detail, style="Detail.TLabel").pack(anchor="w", pady=(8, 16))
             actions = ttk.Frame(body, style="Card.TFrame")
             actions.pack(fill="x")
-            self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
+            self._button(actions, text="Close", command=self.close, primary=True).pack(side="right")
             return
 
         list_shell = ttk.Frame(body, style="Card.TFrame")
-        list_shell.pack(fill="both", expand=True, pady=(0, 22))
+        list_shell.pack(fill="both", expand=True, pady=(0, 16))
         self._session_scrollbar = ttk.Scrollbar(list_shell, orient="vertical")
         self._session_list = ttk.Treeview(
             list_shell,
@@ -207,13 +218,13 @@ class HistoryWindow:
             show="headings",
             selectmode="browse",
             style="SummarizeAudio.Treeview",
-            height=12,
+            height=8,
             yscrollcommand=self._session_scrollbar.set,
         )
         self._session_list.heading("session", text="Session", anchor="w")
         self._session_list.heading("date", text="Date", anchor="w")
-        self._session_list.column("session", width=860, anchor="w", stretch=True)
-        self._session_list.column("date", width=160, anchor="w", stretch=False)
+        self._session_list.column("session", width=420, anchor="w", stretch=True)
+        self._session_list.column("date", width=120, anchor="w", stretch=False)
         self._session_scrollbar.configure(command=self._session_list.yview)
         self._session_list.pack(side="left", fill="both", expand=True)
         self._session_scrollbar.pack(side="right", fill="y")
@@ -271,12 +282,12 @@ class HistoryWindow:
             return
 
         path_box = ttk.Frame(self._detail_card, style="Card.TFrame")
-        path_box.pack(fill="x", pady=(0, 12))
+        path_box.pack(fill="x", pady=(0, 8))
         title_row = ttk.Frame(path_box, style="Card.TFrame")
         title_row.pack(fill="x")
         ttk.Label(title_row, text=display_session_label(session.label), style="Step.TLabel").pack(side="left", anchor="w")
         if session.archived:
-            ttk.Label(title_row, text="Archived", style="Badge.TLabel", padding=(10, 4)).pack(side="left", padx=(12, 0))
+            ttk.Label(title_row, text="Archived", style="Badge.TLabel", padding=(8, 3)).pack(side="left", padx=(10, 0))
             ttk.Label(path_box, text="Archived session", style="Detail.TLabel").pack(anchor="w", pady=(2, 0))
         meta_row = ttk.Frame(path_box, style="Card.TFrame")
         meta_row.pack(fill="x", pady=(2, 0))
@@ -286,37 +297,37 @@ class HistoryWindow:
             text=str(session.folder),
             style="Link.TLabel",
             cursor="hand2",
-            font=("Helvetica Neue", 11, "underline"),
+            font=("Helvetica Neue", 10, "underline"),
         )
-        location.pack(side="left", padx=(28, 0))
+        location.pack(side="left", padx=(20, 0))
         location.bind("<Button-1>", lambda _event, path=session.folder: self._reveal_in_finder(path))
         location.bind("<Enter>", lambda _event: location.configure(foreground="#1f5ddb"))
         location.bind("<Leave>", lambda _event: location.configure(foreground="#2e72ff"))
 
         details = ttk.Frame(self._detail_card, style="Card.TFrame")
-        details.pack(fill="x", pady=(0, 18))
+        details.pack(fill="x", pady=(0, 12))
         if session.summary is not None:
-            ttk.Label(details, text=f"Summary: {session.summary.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+            ttk.Label(details, text=f"Summary: {session.summary.name}", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
         else:
-            ttk.Label(details, text="Summary: not yet created", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+            ttk.Label(details, text="Summary: not yet created", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
         if getattr(session, "source_path", None) is not None:
-            ttk.Label(details, text=f"Source: {session.source_path.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+            ttk.Label(details, text=f"Source: {session.source_path.name}", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
         if session.audio is not None:
-            ttk.Label(details, text=f"Recording: {session.audio.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+            ttk.Label(details, text=f"Recording: {session.audio.name}", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
         if session.transcript is not None:
-            ttk.Label(details, text=f"Transcript: {session.transcript.name}", style="Detail.TLabel", wraplength=1080, justify="left").pack(anchor="w", pady=1)
+            ttk.Label(details, text=f"Transcript: {session.transcript.name}", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
 
         actions = ttk.Frame(self._detail_card, style="Card.TFrame")
-        actions.pack(fill="x", pady=(16, 0))
+        actions.pack(fill="x", pady=(12, 0))
         specs = session_action_specs(session)
         for idx, (label, path) in enumerate(specs):
             if idx == 0:
                 self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=True).pack(side="left")
             else:
-                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(8, 0))
+                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(6, 0))
         resume_actions = self._resume_actions(session)
         for label, callback in resume_actions:
-            self._button(actions, text=label, command=callback, primary=False).pack(side="left", padx=(8, 0))
+            self._button(actions, text=label, command=callback, primary=False).pack(side="left", padx=(6, 0))
         if session.summary is not None and session.summary.exists():
             archive_label = "Unarchive" if session.archived else "Archive"
             self._button(
@@ -324,8 +335,8 @@ class HistoryWindow:
                 text=archive_label,
                 command=lambda s=session: self._toggle_archive(s),
                 primary=False,
-            ).pack(side="left", padx=(8, 0))
-        self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
+            ).pack(side="left", padx=(6, 0))
+        self._button(actions, text="Close", command=self.close, primary=False).pack(side="right")
 
     def _toggle_archive(self, session: "SessionFiles") -> None:
         archive_session(session.id, archived=not session.archived)
@@ -350,48 +361,14 @@ class HistoryWindow:
         source = session.audio if session.audio is not None and session.audio.exists() else getattr(session, "source_path", None)
         if source is None:
             return
-        self._launch_workflow("audio", source, resume_session_id=session.id)
-        self._root.withdraw()
+        self._ui_queue.put(("show_workflow", "audio", source, session.id))
+        self._win.withdraw()
 
     def _resume_text_session(self, session: "SessionFiles") -> None:
         if session.transcript is None or not session.transcript.exists():
             return
-        self._launch_workflow("text", session.transcript, resume_session_id=session.id)
-        self._root.withdraw()
-
-    def _launch_workflow(self, mode: str, source: Path | None, resume_session_id: str | None = None) -> None:
-        cmd = [sys.executable, "-m", "summarizeaudio.workflow_window", "--mode", mode]
-        if source is not None:
-            cmd.extend(["--source", str(source)])
-        if resume_session_id is not None:
-            cmd.extend(["--resume-session-id", resume_session_id])
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            return
-
-        def wait_and_refresh() -> None:
-            try:
-                proc.wait()
-            finally:
-                try:
-                    self._root.after(0, self._refresh_after_workflow)
-                except Exception:
-                    pass
-
-        threading.Thread(target=wait_and_refresh, daemon=True).start()
-
-    def _refresh_after_workflow(self) -> None:
-        if not self._root.winfo_exists():
-            return
-        self._reload_sessions()
-        self._render()
-        try:
-            self._root.deiconify()
-            self._root.lift()
-            self._root.focus_force()
-        except Exception:
-            pass
+        self._ui_queue.put(("show_workflow", "text", session.transcript, session.id))
+        self._win.withdraw()
 
     def _session_display_label(self, session) -> str:
         return session.label
@@ -428,18 +405,3 @@ class HistoryWindow:
                 subprocess.run(["xdg-open", str(path)], check=False)
         except Exception:
             pass
-
-    def _close(self) -> None:
-        try:
-            self._root.destroy()
-        except Exception:
-            pass
-
-
-def main(argv: list[str] | None = None) -> int:
-    _build_parser().parse_args(argv)
-    return HistoryWindow().run()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

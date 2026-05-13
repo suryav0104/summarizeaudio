@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import os
 import queue
 import subprocess
@@ -13,7 +12,7 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from tkinter.scrolledtext import ScrolledText
 
-from summarizeaudio.config import load_config
+from summarizeaudio.config import AppConfig
 from summarizeaudio.pipeline import Pipeline, PipelineMode
 from summarizeaudio.chooser_window import _native_audio_picker, _native_text_picker
 from summarizeaudio.sessions import session_by_id, session_for_summary_path
@@ -44,7 +43,7 @@ class _MarqueeProgress:
         self._bar_color = bar_color
         self._height = height
         self._base_width = width
-        self._bar_width = max(300, int(width * 0.294))
+        self._bar_width = max(60, int(width * 0.294))
         self._radius = max(4, height // 2)
         self._bar_x = 0
         self._direction = 1
@@ -103,7 +102,7 @@ class _MarqueeProgress:
         if width == self._base_width and self._track_items:
             return
         self._base_width = width
-        self._bar_width = max(300, int(width * 0.294))
+        self._bar_width = max(60, int(width * 0.294))
         max_x = max(0, width - self._bar_width)
         self._bar_x = min(max(self._bar_x, 0), max_x)
         self._draw()
@@ -171,32 +170,32 @@ class _MarqueeProgress:
         self._after_id = self._canvas.after(self._interval, self._tick)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SummarizeAudio workflow window.")
-    parser.add_argument("--mode", choices=("record", "audio", "text"), required=True)
-    parser.add_argument("--source", default="", help="Optional source path for record mode")
-    parser.add_argument("--resume-session-id", default="", help="Optional session id to resume in place")
-    return parser
-
-
 class WorkflowWindow:
-    def __init__(self, mode: str, source: str | None = None, resume_session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        cfg: AppConfig,
+        ui_queue: queue.Queue,
+        mode: str,
+        source: Path | None = None,
+        resume_session_id: str | None = None,
+    ) -> None:
         self._mode = mode
-        self._source = Path(source) if source else None
+        self._source = source
         self._resume_session_id = resume_session_id
-        self._ui_queue: queue.Queue = queue.Queue()
-        self._cfg = load_config(self._ui_queue)
+        self._ui_queue = ui_queue
+        self._cfg = cfg
         self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
-        self._root = tk.Tk()
-        self._root.withdraw()
-        self._root.title("SummarizeAudio")
-        self._window_width = 1440
-        self._window_height = 900
-        self._root.geometry(f"{self._window_width}x{self._window_height}")
-        self._root.minsize(1180, 700)
-        self._root.resizable(True, True)
-        self._root.configure(bg="#f5f7fb")
-        self._root.protocol("WM_DELETE_WINDOW", self._close)
+        self._win = tk.Toplevel(root)
+        self._win.withdraw()
+        self._win.title("SummarizeAudio")
+        self._window_width = 560
+        self._window_height = 480
+        self._win.geometry(f"{self._window_width}x{self._window_height}")
+        self._win.minsize(480, 400)
+        self._win.resizable(True, True)
+        self._win.configure(bg="#f5f7fb")
+        self._win.protocol("WM_DELETE_WINDOW", self._close)
 
         self._state = "chooser" if self._mode in {"audio", "text"} and self._source is None else "processing"
         self._step_text = "Choose a file to begin" if self._state == "chooser" else "Working…"
@@ -212,6 +211,7 @@ class WorkflowWindow:
         self._pipeline_started = False
         self._processing_started = False
         self._step_state = "chooser"
+        self._transcription_pct: float = 0.0
 
         style = ttk.Style()
         try:
@@ -220,10 +220,10 @@ class WorkflowWindow:
             pass
         style.configure("SummarizeAudio.TFrame", background="#f5f7fb")
         style.configure("Card.TFrame", background="white")
-        style.configure("Title.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 24, "bold"))
-        style.configure("Sub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 12))
-        style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 15, "bold"))
-        style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 11))
+        style.configure("Title.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 20, "bold"))
+        style.configure("Sub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 11))
+        style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 13, "bold"))
+        style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 10))
         self._title = tk.StringVar(value="Prepare your workflow")
         self._subtitle = tk.StringVar(value="Pick a file, review the prompt, and finish with a final name.")
         self._status = tk.StringVar(value=self._step_text)
@@ -231,9 +231,8 @@ class WorkflowWindow:
         self._body = None
         self._progress = None
         self._det_progress_bar: ttk.Progressbar | None = None
-        self._transcription_pct: float = 0.0
-        self._text_font = ("Helvetica Neue", 14)
-        self._button_font = ("Helvetica Neue", 13, "bold")
+        self._text_font = ("Helvetica Neue", 13)
+        self._button_font = ("Helvetica Neue", 12, "bold")
         self._button_bg = "#f6f8fb"
         self._button_fg = "#000000"
         self._button_secondary_bg = "#edf2f9"
@@ -241,6 +240,61 @@ class WorkflowWindow:
         self._button_border = "#d4dce8"
         self._button_accent_bg = "#2e72ff"
         self._button_accent_fg = "#000000"
+
+    # ── Public lifecycle ──────────────────────────────────────────────────────
+
+    def show(self) -> None:
+        """Show the window and start the pipeline if mode requires it."""
+        self._render()
+        self._win.deiconify()
+        self._center()
+        self._focus()
+        if self._state == "processing":
+            self._start_pipeline()
+
+    def retarget(
+        self,
+        mode: str,
+        source: Path | None = None,
+        resume_session_id: str | None = None,
+    ) -> None:
+        """Switch this window to a new workflow without closing it.
+
+        Only valid when no pipeline is actively running (idle or done state).
+        Resets all state, creates a fresh pipeline, and re-renders.
+        """
+        self._mode = mode
+        self._source = source
+        self._active_source = source
+        self._resume_session_id = resume_session_id
+        self._resume_session = session_by_id(resume_session_id) if resume_session_id else None
+        self._state = "chooser" if mode in {"audio", "text"} and source is None else "processing"
+        self._step_state = "chooser" if self._state == "chooser" else "processing"
+        self._resolver = None
+        self._resolver_kind = None
+        self._prompt_text = ""
+        self._default_name = ""
+        self._summary_path = None
+        self._summary_preview = ""
+        self._transcription_pct = 0.0
+        self._pipeline_started = False
+        self._processing_started = False
+        self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
+        self._render()
+        self._focus()
+        if self._state == "processing":
+            self._start_pipeline()
+
+    def close(self) -> None:
+        """Close and destroy the window."""
+        self._close()
+
+    @property
+    def pipeline_active(self) -> bool:
+        """True when a pipeline is running and the window is in processing state."""
+        return self._state == "processing" and self._processing_started
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _stop_progress(self) -> None:
         if self._progress is not None:
@@ -256,39 +310,22 @@ class WorkflowWindow:
                 pass
             self._det_progress_bar = None
 
-    def run(self) -> int:
-        self._render()
-        self._root.deiconify()
-        self._center()
-        self._root.lift()
-        self._root.attributes("-topmost", True)
-        self._root.after(250, lambda: self._root.attributes("-topmost", False))
-        self._root.focus_force()
-        self._root.grab_set()
-        self._root.after(100, self._pump_queue)
-
-        if self._state == "processing":
-            self._start_pipeline()
-
-        self._root.mainloop()
-        return 0
-
     def _center(self) -> None:
-        self._root.update_idletasks()
+        self._win.update_idletasks()
         w = self._window_width
         h = self._window_height
-        sw = self._root.winfo_screenwidth()
-        sh = self._root.winfo_screenheight()
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
         x = max((sw - w) // 2, 0)
         y = max((sh - h) // 2, 0)
-        self._root.geometry(f"{w}x{h}+{x}+{y}")
+        self._win.geometry(f"{w}x{h}+{x}+{y}")
 
     def _clear_body(self) -> ttk.Frame:
         if self._content is not None:
             self._content.destroy()
-        self._content = ttk.Frame(self._root, style="SummarizeAudio.TFrame", padding=18)
+        self._content = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=14)
         self._content.pack(fill="both", expand=True)
-        card = ttk.Frame(self._content, style="Card.TFrame", padding=24)
+        card = ttk.Frame(self._content, style="Card.TFrame", padding=18)
         card.pack(fill="both", expand=True)
         self._body = card
         return card
@@ -305,8 +342,8 @@ class WorkflowWindow:
                 activeforeground="#000000",
                 relief="flat",
                 bd=0,
-                padx=16,
-                pady=10,
+                padx=14,
+                pady=8,
                 font=self._button_font,
                 highlightthickness=0,
             )
@@ -320,8 +357,8 @@ class WorkflowWindow:
             activeforeground=self._button_secondary_fg,
             relief="flat",
             bd=0,
-            padx=16,
-            pady=10,
+            padx=14,
+            pady=8,
             font=self._button_font,
             highlightthickness=1,
             highlightbackground=self._button_border,
@@ -344,7 +381,7 @@ class WorkflowWindow:
             highlightcolor="#2e72ff",
             font=self._text_font,
         )
-        text.configure(padx=12, pady=10)
+        text.configure(padx=10, pady=8)
         return text
 
     def _entry_widget(self, parent: tk.Misc, *, textvariable: tk.StringVar) -> tk.Entry:
@@ -389,51 +426,58 @@ class WorkflowWindow:
         except Exception:
             pass
 
-    def _raise_window(self) -> None:
+    def _focus(self) -> None:
         try:
-            self._root.deiconify()
-            self._root.lift()
-            self._root.focus_force()
+            self._win.deiconify()
+            self._win.lift()
+            self._win.attributes("-topmost", True)
+            self._win.after(250, lambda: self._win.attributes("-topmost", False))
+            self._win.focus_force()
         except Exception:
             pass
 
+    # Keep _raise_window as an alias used internally
+    def _raise_window(self) -> None:
+        self._focus()
+
     def _render(self) -> None:
         self._stop_progress()
-        for child in self._root.winfo_children():
+        for child in self._win.winfo_children():
             if child is not self._content:
                 try:
                     child.destroy()
                 except Exception:
                     pass
 
-        header = ttk.Frame(self._root, style="SummarizeAudio.TFrame", padding=(18, 18, 18, 0))
+        header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(14, 14, 14, 0))
         header.pack(fill="x")
         ttk.Label(header, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
         ttk.Label(header, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
 
         body = self._clear_body()
         ttk.Label(body, textvariable=self._status, style="Step.TLabel").pack(anchor="w")
-        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(8, 14))
+        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(6, 10))
 
         if self._state == "processing":
+            progress_width = max(self._window_width - 80, 400)
             if self._step_state == "summarizing":
                 self._det_progress_bar = None
                 self._progress = _MarqueeProgress(
                     body,
-                    width=max(960, self._window_width - 120),
+                    width=progress_width,
                     height=32,
                 )
-                self._progress.pack(fill="x", pady=(0, 18))
+                self._progress.pack(fill="x", pady=(0, 14))
                 self._progress.start()
             else:
                 self._det_progress_bar = None
                 self._progress = _MarqueeProgress(
                     body,
-                    width=max(960, self._window_width - 120),
+                    width=progress_width,
                     height=32,
                     mode="determinate",
                 )
-                self._progress.pack(fill="x", pady=(0, 18))
+                self._progress.pack(fill="x", pady=(0, 14))
                 self._progress.set_percent(self._transcription_pct)
         else:
             self._progress = None
@@ -459,12 +503,12 @@ class WorkflowWindow:
         self._status.set("Waiting for file selection")
         self._step_state = "chooser"
         self._detail_text = (
-            "Click Choose File to open the native macOS picker. The window stays here and continues "
+            "Click Choose File to open the native picker. The window stays here and continues "
             "through processing."
         )
         self._render_steps(body)
         actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(18, 0))
+        actions.pack(fill="x", pady=(14, 0))
         self._button(actions, text="Choose File", command=self._choose_file, primary=True).pack(side="left")
         self._button(actions, text="Cancel", command=self._close, primary=False).pack(side="left", padx=(8, 0))
 
@@ -492,8 +536,8 @@ class WorkflowWindow:
         self._detail_text = "Keep {transcript} in the prompt. It will be replaced before summarization starts."
         self._render_steps(body)
         prompt_box = ttk.Frame(body, style="Card.TFrame")
-        prompt_box.pack(side="top", fill="both", expand=True, pady=(8, 8))
-        text = self._text_widget(prompt_box, width=92, height=11)
+        prompt_box.pack(side="top", fill="both", expand=True, pady=(6, 6))
+        text = self._text_widget(prompt_box, width=52, height=11)
         text.pack(fill="both", expand=True)
         text.insert("1.0", self._prompt_text)
         text.focus_set()
@@ -510,7 +554,7 @@ class WorkflowWindow:
             self._raise_window()
 
         actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(side="bottom", fill="x", pady=(8, 0))
+        actions.pack(side="bottom", fill="x", pady=(6, 0))
         confirm_btn = self._button(actions, text="Update Prompt", command=confirm, primary=True)
         confirm_btn.pack(side="right")
 
@@ -523,7 +567,7 @@ class WorkflowWindow:
         self._render_steps(body)
         name_var = tk.StringVar(value=self._default_name)
         entry = self._entry_widget(body, textvariable=name_var)
-        entry.pack(fill="x", pady=(10, 10))
+        entry.pack(fill="x", pady=(8, 8))
         entry.focus_set()
 
         def confirm() -> None:
@@ -553,7 +597,7 @@ class WorkflowWindow:
     def _render_message(self, body: ttk.Frame) -> None:
         self._stop_progress()
         self._render_steps(body)
-        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=820, justify="left").pack(anchor="w", pady=(10, 16))
+        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(8, 12))
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(fill="x")
         self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
@@ -571,14 +615,14 @@ class WorkflowWindow:
 
         session = self._summary_session()
         preview_box = ttk.Frame(body, style="Card.TFrame")
-        preview_box.pack(fill="both", expand=True, pady=(8, 8))
-        preview = self._text_widget(preview_box, width=96, height=8)
+        preview_box.pack(fill="both", expand=True, pady=(6, 6))
+        preview = self._text_widget(preview_box, width=56, height=8)
         preview.pack(fill="both", expand=True)
         preview.insert("1.0", self._summary_preview)
         preview.configure(state="disabled")
 
         actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(8, 0))
+        actions.pack(fill="x", pady=(6, 0))
         action_specs = self._summary_action_specs(session)
         for index, (label, path) in enumerate(action_specs):
             self._button(
@@ -632,7 +676,7 @@ class WorkflowWindow:
 
     def _render_steps(self, body: ttk.Frame) -> None:
         steps = ttk.Frame(body, style="Card.TFrame")
-        steps.pack(fill="x", pady=(6, 16))
+        steps.pack(fill="x", pady=(4, 12))
         for idx, label in enumerate(self._steps_for_mode()):
             if idx < self._completed_step_count():
                 prefix = "✓"
@@ -706,16 +750,14 @@ class WorkflowWindow:
     def _choose_file(self) -> None:
         title = "Select Audio File" if self._mode == "audio" else "Select Text File"
         try:
-            self._root.attributes("-topmost", False)
-            self._root.grab_release()
+            self._win.attributes("-topmost", False)
         except Exception:
             pass
         path = _native_audio_picker(title) if self._mode == "audio" else _native_text_picker(title)
         try:
-            self._root.lift()
-            self._root.grab_set()
-            self._root.attributes("-topmost", True)
-            self._root.after(200, lambda: self._root.attributes("-topmost", False))
+            self._win.lift()
+            self._win.attributes("-topmost", True)
+            self._win.after(200, lambda: self._win.attributes("-topmost", False))
         except Exception:
             pass
         if not path:
@@ -762,16 +804,6 @@ class WorkflowWindow:
                 )
 
         threading.Thread(target=run, daemon=True).start()
-
-    def _pump_queue(self) -> None:
-        try:
-            while True:
-                item = self._ui_queue.get_nowait()
-                self._handle_item(item)
-        except queue.Empty:
-            pass
-        if self._root.winfo_exists():
-            self._root.after(100, self._pump_queue)
 
     def _handle_item(self, item: tuple) -> None:
         kind = item[0]
@@ -850,20 +882,6 @@ class WorkflowWindow:
     def _close(self) -> None:
         self._stop_progress()
         try:
-            self._root.grab_release()
+            self._win.destroy()
         except Exception:
             pass
-        try:
-            self._root.destroy()
-        except Exception:
-            pass
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    window = WorkflowWindow(args.mode, source=args.source or None, resume_session_id=args.resume_session_id or None)
-    return window.run()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

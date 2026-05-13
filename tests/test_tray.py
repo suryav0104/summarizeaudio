@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-import types
 
 from summarizeaudio.config import (
     AppConfig,
@@ -27,9 +26,15 @@ def make_config(tmp_path: Path, model: str) -> AppConfig:
     )
 
 
+def _fake_wm():
+    return SimpleNamespace(
+        root=SimpleNamespace(after=lambda *a: None, quit=lambda: None)
+    )
+
+
 def test_model_menu_checks_current_config_model(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:12b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None)
 
@@ -44,7 +49,7 @@ def test_model_menu_checks_current_config_model(tmp_path, monkeypatch):
 
 def test_model_menu_updates_checkmark_after_selection(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     saved = []
 
     def fake_save(cfg):
@@ -72,22 +77,9 @@ def test_model_menu_updates_checkmark_after_selection(tmp_path, monkeypatch):
     assert saved[-1] == "gemma3:12b"
 
 
-def test_history_menu_launches_popup_window(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    launched = []
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.Popen", lambda cmd, stdout=None, stderr=None: launched.append(cmd))
-    app = TrayApp()
-
-    app._on_history(None, None)
-
-    assert launched
-    assert launched[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.history_window"]
-
-
 def test_history_menu_shows_popup_item(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None)
 
@@ -97,122 +89,44 @@ def test_history_menu_shows_popup_item(tmp_path, monkeypatch):
     assert any(item.text == "History…" for item in items)
 
 
-def test_rumps_icon_state_uses_emoji_title(tmp_path, monkeypatch):
+def test_on_history_posts_show_history_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    app = TrayApp()
-    app._use_rumps = True
-    app._tray = SimpleNamespace(title=None)
-
-    app._set_icon("recording")
-
-    assert app._tray.title == "🔴"
-
-
-def test_info_dialog_uses_centered_popup_window(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    calls = []
-    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": calls.append((title, message)))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
 
-    app._on_info_dialog("No usable audio was captured.", "Check your input.")
+    app._on_history(None, None)
 
-    assert calls
-    assert calls[0] == ("No usable audio was captured.", "Check your input.")
+    item = app._ui_queue.get_nowait()
+    assert item == ("show_history",)
 
 
-def test_override_dialog_uses_scrollable_editor_and_preserves_full_prompt(tmp_path, monkeypatch):
+def test_on_local_audio_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
-    resolved = []
-    override = SimpleNamespace(_resolve=lambda value: resolved.append(value))
-    prompt = "Line 1\n" + ("long prompt text\n" * 40) + "Transcript:\n{transcript}"
 
-    called = []
-    def fake_run(cmd, input=None, text=None, capture_output=None, check=None):
-        called.append((cmd, input))
-        return SimpleNamespace(returncode=0, stdout=input)
+    app._on_local_audio(None, None)
 
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.run", fake_run)
-
-    app._on_override_dialog(override, prompt)
-
-    import time
-    for _ in range(50):
-        if resolved:
-            break
-        time.sleep(0.01)
-
-    assert called
-    assert called[0][0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.prompt_editor"]
-    assert resolved == [prompt]
+    item = app._ui_queue.get_nowait()
+    assert item[0] == "show_workflow"
+    assert item[1] == "audio"
 
 
-def test_name_dialog_uses_name_editor_and_resolves_value(tmp_path, monkeypatch):
+def test_on_local_text_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
-    resolved = []
-    name_event = SimpleNamespace(_resolve=lambda value: resolved.append(value))
-    default_name = "Project Update"
 
-    called = []
+    app._on_local_text(None, None)
 
-    def fake_run(cmd, input=None, text=None, capture_output=None, check=None):
-        called.append((cmd, input))
-        return SimpleNamespace(returncode=0, stdout="Project Update Final")
-
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.run", fake_run)
-
-    app._on_name_dialog(name_event, default_name)
-
-    import time
-    for _ in range(50):
-        if resolved:
-            break
-        time.sleep(0.01)
-
-    assert called
-    assert called[0][0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.prompt_editor"]
-    assert "--mode" in called[0][0]
-    assert "name" in called[0][0]
-    assert resolved == ["Project Update Final"]
+    item = app._ui_queue.get_nowait()
+    assert item[0] == "show_workflow"
+    assert item[1] == "text"
 
 
-def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
+def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-
-    class FakeRecorder:
-        def __init__(self, *args, **kwargs):
-            self.started = False
-
-        def start(self):
-            self.started = True
-
-        def cleanup(self, delete_wav=False):
-            return None
-
-    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
-    app = TrayApp()
-    app._tray = SimpleNamespace(menu=None, icon=None)
-
-    app._on_start_recording(None, None)
-
-    assert app._recorder is not None
-
-
-def test_stop_recording_starts_pipeline_without_prompt(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    calls = []
-    monkeypatch.setattr(
-        "summarizeaudio.tray.subprocess.Popen",
-        lambda cmd, stdout=None, stderr=None: calls.append(cmd) or SimpleNamespace(),
-    )
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
 
     class FakeRecorder:
         stopped = False
@@ -233,96 +147,45 @@ def test_stop_recording_starts_pipeline_without_prompt(tmp_path, monkeypatch):
     app._on_stop_recording(None, None)
 
     assert app._recorder is None
-    assert calls
-    assert calls[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.workflow_window"]
-    assert "--mode" in calls[0]
-    assert "record" in calls[0]
-    assert "--source" in calls[0]
-    assert str(Path("/tmp/recording.mp3")) in calls[0]
+    item = app._ui_queue.get_nowait()
+    assert item[0] == "show_workflow"
+    assert item[1] == "record"
+    assert item[2] == Path("/tmp/recording.mp3")
 
 
-def test_pick_file_uses_chooser_helper(monkeypatch, tmp_path):
+def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-    calls = []
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
 
-    def fake_run(cmd, capture_output=None, text=None, check=None):
-        calls.append(cmd)
-        return SimpleNamespace(returncode=0, stdout="/tmp/example.mp3")
+    class FakeRecorder:
+        def __init__(self, *args, **kwargs):
+            self.started = False
 
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.run", fake_run)
+        def start(self):
+            self.started = True
+
+        def cleanup(self, delete_wav=False):
+            return None
+
+    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
     app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
 
-    result = app._pick_file("audio")
+    app._on_start_recording(None, None)
 
-    assert result is not None
-    assert result.name == "example.mp3"
-    assert calls
-    assert calls[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.chooser_window"]
+    assert app._recorder is not None
 
 
-def test_pick_file_cancel_returns_none(monkeypatch, tmp_path):
+def test_on_icon_state_manages_pipeline_running_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-
-    def fake_run(cmd, capture_output=None, text=None, check=None):
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
-
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.run", fake_run)
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
     app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
 
-    assert app._pick_file("audio") is None
+    assert not app._pipeline_running.is_set()
 
+    app._on_icon_state("processing")
+    assert app._pipeline_running.is_set()
 
-def test_pick_file_failure_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.tray.Pipeline", lambda cfg, ui_queue: SimpleNamespace())
-
-    def fake_run(cmd, capture_output=None, text=None, check=None):
-        return SimpleNamespace(returncode=2, stdout="", stderr="chooser crashed")
-
-    monkeypatch.setattr("summarizeaudio.tray.subprocess.run", fake_run)
-    app = TrayApp()
-
-    try:
-        app._pick_file("audio")
-        raised = False
-    except RuntimeError as exc:
-        raised = True
-        assert "chooser crashed" in str(exc)
-
-    assert raised
-
-
-def test_local_audio_flow_starts_after_pick(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    calls = []
-    monkeypatch.setattr(
-        "summarizeaudio.tray.subprocess.Popen",
-        lambda cmd, stdout=None, stderr=None: calls.append(cmd) or SimpleNamespace(),
-    )
-    app = TrayApp()
-
-    app._run_local_audio_flow()
-
-    assert calls
-    assert calls[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.workflow_window"]
-    assert "--mode" in calls[0]
-    assert "audio" in calls[0]
-
-
-def test_local_text_flow_starts_after_pick(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    calls = []
-    monkeypatch.setattr(
-        "summarizeaudio.tray.subprocess.Popen",
-        lambda cmd, stdout=None, stderr=None: calls.append(cmd) or SimpleNamespace(),
-    )
-    app = TrayApp()
-
-    app._run_local_text_flow()
-
-    assert calls
-    assert calls[0][:3] == [__import__("sys").executable, "-m", "summarizeaudio.workflow_window"]
-    assert "--mode" in calls[0]
-    assert "text" in calls[0]
+    app._on_icon_state("idle")
+    assert not app._pipeline_running.is_set()

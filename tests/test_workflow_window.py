@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue as queue_mod
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -271,16 +272,15 @@ class FakeLabel:
 
 
 def test_workflow_window_chooser_stays_open_after_file_pick(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     picked = []
     monkeypatch.setattr("summarizeaudio.workflow_window._native_audio_picker", lambda title: picked.append(title) or "/tmp/example.mp3")
 
-    window = workflow_window.WorkflowWindow("audio")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     window._render = lambda: picked.append("render")
     started = []
     window._start_pipeline = lambda: started.append(window._active_source)
@@ -292,14 +292,12 @@ def test_workflow_window_chooser_stays_open_after_file_pick(tmp_path, monkeypatc
     assert window._active_source.name == "example.mp3"
     assert started and started[0].name == "example.mp3"
     assert fake_root.destroyed is False
-    assert fake_root.grabbed is True
 
 
 def test_workflow_window_chooser_has_no_spinner(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
@@ -316,17 +314,16 @@ def test_workflow_window_chooser_has_no_spinner(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeWidget)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeWidget)
 
-    window = workflow_window.WorkflowWindow("audio")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     window._render()
 
     assert window._progress is None
 
 
 def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -334,7 +331,7 @@ def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     FakeButton.instances.clear()
 
-    window = workflow_window.WorkflowWindow("audio")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     window._render_steps = lambda body: None
     window._render_chooser(FakeFrame())
 
@@ -345,16 +342,16 @@ def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
 
 
 def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
 
-    record_window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    cfg = make_config(tmp_path)
+    record_window = workflow_window.WorkflowWindow(SimpleNamespace(), cfg, queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     record_window._status = FakeStringVar()
     record_window._step_state = "processing"
     record_window._render_processing(FakeFrame())
@@ -367,7 +364,7 @@ def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
     assert record_window._completed_step_count() == 2
     assert record_window._current_step_index() == 2
 
-    audio_window = workflow_window.WorkflowWindow("audio")
+    audio_window = workflow_window.WorkflowWindow(SimpleNamespace(), cfg, queue_mod.Queue(), "audio")
     audio_window._status = FakeStringVar()
     audio_window._step_state = "processing"
     audio_window._render_processing(FakeFrame())
@@ -380,7 +377,7 @@ def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
     assert audio_window._completed_step_count() == 2
     assert audio_window._current_step_index() == 2
 
-    text_window = workflow_window.WorkflowWindow("text")
+    text_window = workflow_window.WorkflowWindow(SimpleNamespace(), cfg, queue_mod.Queue(), "text")
     text_window._status = FakeStringVar()
     text_window._step_state = "processing"
     text_window._render_processing(FakeFrame())
@@ -395,10 +392,9 @@ def test_workflow_window_uses_imperative_status_labels(tmp_path, monkeypatch):
 
 
 def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Canvas", FakeCanvas)
@@ -408,7 +404,7 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
     FakeStyle.instances.clear()
     FakeCanvas.instances.clear()
 
-    window = workflow_window.WorkflowWindow("audio")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     window._state = "processing"
     window._step_state = "summarizing"
     window._render()
@@ -416,14 +412,14 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
     assert FakeCanvas.instances
     canvas = FakeCanvas.instances[-1]
     assert canvas.kwargs["height"] == 32
-    assert canvas.kwargs["width"] == 1320
+    assert canvas.kwargs["width"] == 480
     assert canvas.after_calls
     assert canvas.after_calls[-1][0] == 16
     assert window._progress._track_color == "#e7ebf2"
     assert window._progress._bar_color == "#222222"
     assert window._progress._interval == 16
     assert window._progress._step == 4
-    assert 300 <= window._progress._bar_width <= 420
+    assert 60 <= window._progress._bar_width <= 200
     max_x = canvas.kwargs["width"] - window._progress._bar_width
     window._progress._bar_x = max_x
     window._progress._direction = 1
@@ -438,10 +434,9 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
 
 
 def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -464,7 +459,7 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     transcript_path.write_text("transcript content", encoding="utf-8")
     audio_path = audio_dir / "Audio - Topic 05-08-26.mp3"
     audio_path.write_text("audio content", encoding="utf-8")
-    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
     window._summary_path = summary_path
     window._summary_preview = "summary content"
     window._render_steps = lambda body: None
@@ -477,14 +472,13 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
 
 
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
 
-    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render = lambda: None
 
     resolved = []
@@ -498,10 +492,9 @@ def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
 
 
 def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -509,7 +502,7 @@ def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypa
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Entry", FakeEntry)
     FakeButton.instances.clear()
-    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render_steps = lambda body: None
     window._default_name = "Project Update"
     body = FakeFrame()
@@ -522,13 +515,12 @@ def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypa
 
 
 def test_workflow_window_workflow_phase_sets_summarizing_state(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
-    window = workflow_window.WorkflowWindow("audio")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     render_calls = []
     raised = []
     window._render = lambda: render_calls.append((window._state, window._step_state))
@@ -543,13 +535,12 @@ def test_workflow_window_workflow_phase_sets_summarizing_state(tmp_path, monkeyp
 
 
 def test_workflow_window_save_name_keeps_window_visible(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
-    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
@@ -572,10 +563,9 @@ def test_workflow_window_save_name_keeps_window_visible(tmp_path, monkeypatch):
 
 
 def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -585,7 +575,7 @@ def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
     FakeText.instances.clear()
     FakeButton.instances.clear()
 
-    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render_steps = lambda body: None
     window._prompt_text = "Prompt body"
     body = FakeFrame()
@@ -600,10 +590,9 @@ def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
 
 
 def test_workflow_window_prompt_footer_is_fixed(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -612,7 +601,7 @@ def test_workflow_window_prompt_footer_is_fixed(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
 
     body = FakeFrame()
-    window = workflow_window.WorkflowWindow("record", source="/tmp/recording.mp3")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render_steps = lambda body: None
     window._prompt_text = "Prompt body"
     window._render_prompt(body)
@@ -621,17 +610,16 @@ def test_workflow_window_prompt_footer_is_fixed(tmp_path, monkeypatch):
 
 
 def test_workflow_window_summary_ready_opens_summary_and_stays_open(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     opened = []
     summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
     summary_path.parent.mkdir(parents=True)
     summary_path.write_text("summary content", encoding="utf-8")
-    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
     window._render = lambda: None
     window._open_path = lambda path: opened.append(Path(path))
     raised = []
@@ -648,10 +636,9 @@ def test_workflow_window_summary_ready_opens_summary_and_stays_open(tmp_path, mo
 
 
 def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
@@ -708,7 +695,7 @@ def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, m
         ),
     )
 
-    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt", resume_session_id="resume-1")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"), resume_session_id="resume-1")
     window._summary_path = summary_path
     window._summary_preview = "summary content"
     window._state = "summary"
@@ -727,10 +714,9 @@ def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, m
 
 
 def test_workflow_window_summary_action_specs_include_available_files(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
 
@@ -783,24 +769,23 @@ def test_workflow_window_summary_action_specs_include_available_files(tmp_path, 
         ),
     )
 
-    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt", resume_session_id="resume-1")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"), resume_session_id="resume-1")
     window._summary_path = summary_path
     session = window._summary_session()
     assert session is not None
     assert window._summary_action_specs(session) == [("Open Transcript", transcript_path), ("Open Recording", audio_path)]
 
 
-def test_workflow_window_defaults_to_larger_geometry(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.workflow_window.load_config", lambda _q=None: make_config(tmp_path))
+def test_workflow_window_has_compact_geometry(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
-    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Tk", lambda: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
 
-    window = workflow_window.WorkflowWindow("text", source="/tmp/notes.txt")
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
 
-    assert window._window_width == 1440
-    assert window._window_height == 900
-    assert fake_root.geometry_value == "1440x900"
-    assert fake_root.minsize_value == (1180, 700)
+    assert window._window_width == 560
+    assert window._window_height == 480
+    assert fake_root.geometry_value == "560x480"
+    assert fake_root.minsize_value == (480, 400)

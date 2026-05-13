@@ -32,6 +32,19 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         handlers=handlers,
     )
+    # Suppress the dock icon on macOS by marking this process as a menu bar
+    # accessory before any Tk window is created. Best-effort: the call is known
+    # to crash on some Python/Tk builds (see ADR-003), so we silently ignore
+    # any exception and accept a dock icon in that case.
+    import sys as _sys
+    if _sys.platform == "darwin":
+        try:
+            import AppKit
+            _NSApp = AppKit.NSApplication.sharedApplication()
+            _NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+        except Exception:
+            pass
+
     from summarizeaudio.tray import run
     run()
 
