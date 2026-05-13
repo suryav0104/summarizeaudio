@@ -20,7 +20,7 @@ Ranked from highest to lowest impact.
 ## [Done] 5. Validate and normalize model output before saving
 - Removed. Validation was implemented then intentionally disabled — the model output is now written as-is. Re-evaluate if output quality becomes a recurring problem.
 
-## 6. Add transcript-quality regression tests
+## [Done] 6. Add transcript-quality regression tests
 - Add a known 20+ sentence fixture.
 - Compare output shape and key facts.
 - Catch prompt regressions before release.
