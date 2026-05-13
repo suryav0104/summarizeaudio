@@ -421,6 +421,7 @@ class WorkflowWindow:
                 self._progress = _MarqueeProgress(
                     body,
                     width=max(960, self._window_width - 120),
+                    height=32,
                 )
                 self._progress.pack(fill="x", pady=(0, 18))
                 self._progress.start()
@@ -429,6 +430,7 @@ class WorkflowWindow:
                 self._progress = _MarqueeProgress(
                     body,
                     width=max(960, self._window_width - 120),
+                    height=32,
                     mode="determinate",
                 )
                 self._progress.pack(fill="x", pady=(0, 18))

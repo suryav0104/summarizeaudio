@@ -415,7 +415,7 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
 
     assert FakeCanvas.instances
     canvas = FakeCanvas.instances[-1]
-    assert canvas.kwargs["height"] == 16
+    assert canvas.kwargs["height"] == 32
     assert canvas.kwargs["width"] == 1320
     assert canvas.after_calls
     assert canvas.after_calls[-1][0] == 16
