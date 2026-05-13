@@ -28,6 +28,7 @@ class _MarqueeProgress:
         height: int = 16,
         track_color: str = "#e7ebf2",
         bar_color: str = "#222222",
+        mode: str = "marquee",
     ) -> None:
         self._frame = ttk.Frame(parent, style="Card.TFrame")
         self._canvas = tk.Canvas(
@@ -53,13 +54,32 @@ class _MarqueeProgress:
         self._running = False
         self._interval = 16
         self._step = 4
+        self._mode = mode
+        self._pct: float = 0.0
+        self._text_item: int | None = None
         self._canvas.bind("<Configure>", self._on_configure)
         self._draw()
 
     def pack(self, *args, **kwargs) -> None:
         self._frame.pack(*args, **kwargs)
 
+    def set_percent(self, pct: float) -> None:
+        if self._mode != "determinate":
+            return
+        self._pct = max(0.0, min(100.0, pct))
+        if not self._canvas.winfo_exists():
+            return
+        width = max(self._canvas.winfo_width(), self._base_width)
+        filled = max(int(2 * self._radius), int(width * self._pct / 100))
+        self._set_capsule(self._track_items, 0, 2, width, self._height - 2, self._track_color)
+        self._set_capsule(self._bar_items, 0, 2, filled, self._height - 2, self._bar_color)
+        if self._text_item is not None:
+            self._canvas.itemconfigure(self._text_item, text=f"{int(self._pct)}%")
+            self._canvas.coords(self._text_item, filled / 2, self._height / 2)
+
     def start(self) -> None:
+        if self._mode != "marquee":
+            return
         if self._running:
             return
         self._running = True
@@ -106,15 +126,26 @@ class _MarqueeProgress:
 
     def _draw(self) -> None:
         self._canvas.delete("all")
+        self._text_item = None
         width = max(self._canvas.winfo_width(), self._base_width)
         self._track_items = self._capsule(0, 2, width, self._height - 2, self._track_color)
-        self._bar_items = self._capsule(
-            self._bar_x,
-            2,
-            self._bar_x + self._bar_width,
-            self._height - 2,
-            self._bar_color,
-        )
+        if self._mode == "determinate":
+            filled = max(int(2 * self._radius), int(width * self._pct / 100))
+            self._bar_items = self._capsule(0, 2, filled, self._height - 2, self._bar_color)
+            self._text_item = self._canvas.create_text(
+                filled / 2, self._height / 2,
+                text=f"{int(self._pct)}%",
+                fill="white",
+                font=("Helvetica Neue", 9, "bold"),
+            )
+        else:
+            self._bar_items = self._capsule(
+                self._bar_x,
+                2,
+                self._bar_x + self._bar_width,
+                self._height - 2,
+                self._bar_color,
+            )
 
     def _tick(self) -> None:
         if not self._running or not self._canvas.winfo_exists():
@@ -394,11 +425,14 @@ class WorkflowWindow:
                 self._progress.pack(fill="x", pady=(0, 18))
                 self._progress.start()
             else:
-                self._progress = None
-                self._det_progress_bar = ttk.Progressbar(
-                    body, mode="determinate", maximum=100, value=self._transcription_pct
+                self._det_progress_bar = None
+                self._progress = _MarqueeProgress(
+                    body,
+                    width=max(960, self._window_width - 120),
+                    mode="determinate",
                 )
-                self._det_progress_bar.pack(fill="x", pady=(0, 18))
+                self._progress.pack(fill="x", pady=(0, 18))
+                self._progress.set_percent(self._transcription_pct)
         else:
             self._progress = None
             self._det_progress_bar = None
@@ -799,8 +833,8 @@ class WorkflowWindow:
         elif kind == "transcription_progress":
             _, pct = item
             self._transcription_pct = pct
-            if self._det_progress_bar is not None:
-                self._det_progress_bar["value"] = pct
+            if self._progress is not None and self._det_progress_bar is None:
+                self._progress.set_percent(pct)
         elif kind == "workflow_phase":
             _, phase = item
             if phase == "summarizing":
