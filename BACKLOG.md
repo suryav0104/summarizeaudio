@@ -21,19 +21,13 @@ Ranked from highest to lowest impact.
 - Removed. Validation was implemented then intentionally disabled — the model output is now written as-is. Re-evaluate if output quality becomes a recurring problem.
 
 ## [Done] 6. Add transcript-quality regression tests
-- Add a known 20+ sentence fixture.
-- Compare output shape and key facts.
-- Catch prompt regressions before release.
+- Done. Added a 22-sentence realistic meeting fixture. Key facts (stats, dates, assignees, action items) are asserted against the outbound prompt to catch template regressions.
 
 ## [Done] 7. Improve the summarization UX with progress and cancellation
-- Show a visible processing state while the model runs.
-- Add a cancel option for long jobs.
-- Make the app feel less frozen during heavy work.
+- Done. Marquee progress bar during summarization, real percent-complete bar during transcription (using faster-whisper segment timestamps), and a Cancel button throughout.
 
-## 8. Reduce noise and improve the output experience
-- Add a summary preview.
-- Add an "open folder" action.
-- Add a lightweight history view for past runs.
+## [Done] 8. Reduce noise and improve the output experience
+- Done. Summary preview, Reveal in Finder, history view with session list, and a real transcription progress bar (black capsule, white percent label) replacing the indeterminate marquee.
 
 ## 9. Make recorder and transcription settings more explicit
 - Expose device selection in the UI.
