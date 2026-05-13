@@ -87,6 +87,7 @@ class HistoryWindow:
         self._session_list = None
         self._session_scrollbar = None
         self._detail_card = None
+        self._button_bar = None
 
     def show(self) -> None:
         self._render()
@@ -184,11 +185,12 @@ class HistoryWindow:
 
     def _render(self) -> None:
         for child in self._win.winfo_children():
-            if child is not self._content:
-                try:
-                    child.destroy()
-                except Exception:
-                    pass
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        self._content = None
+        self._button_bar = None
 
         header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(14, 14, 14, 0))
         header.pack(fill="x")
@@ -198,19 +200,23 @@ class HistoryWindow:
         ttk.Label(header_row, text=title, style="Title.TLabel").pack(side="left", anchor="w")
         toggle_label = "Archived Sessions" if not self._show_archived else "Active Sessions"
         self._button(header_row, text=toggle_label, command=self._toggle_archived_filter, primary=False).pack(side="right")
-        body = self._clear_body()
+
+        # Button bar — packed before body so it always claims space at the bottom.
+        self._button_bar = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(14, 8))
+        self._button_bar.pack(side="bottom", fill="x")
+
         if not self._sessions:
+            body = self._clear_body()
             empty_title = "No archived sessions yet." if self._show_archived else "No saved sessions yet."
             empty_detail = "Archived sessions will appear here." if self._show_archived else "Completed summaries will appear here."
             ttk.Label(body, text=empty_title, style="Step.TLabel").pack(anchor="w")
             ttk.Label(body, text=empty_detail, style="Detail.TLabel").pack(anchor="w", pady=(8, 16))
-            actions = ttk.Frame(body, style="Card.TFrame")
-            actions.pack(fill="x")
-            self._button(actions, text="Close", command=self.close, primary=True).pack(side="right")
+            self._button(self._button_bar, text="Close", command=self.close, primary=True).pack(side="right")
             return
 
+        body = self._clear_body()
         list_shell = ttk.Frame(body, style="Card.TFrame")
-        list_shell.pack(fill="both", expand=True, pady=(0, 16))
+        list_shell.pack(fill="both", expand=True, pady=(0, 8))
         self._session_scrollbar = ttk.Scrollbar(list_shell, orient="vertical")
         self._session_list = ttk.Treeview(
             list_shell,
@@ -245,10 +251,8 @@ class HistoryWindow:
             self._session_list.focus(str(self._selected_index))
             self._session_list.see(str(self._selected_index))
 
-        bottom = ttk.Frame(body, style="Card.TFrame")
-        bottom.pack(fill="both", expand=False)
-        self._detail_card = ttk.Frame(bottom, style="Card.TFrame")
-        self._detail_card.pack(fill="both", expand=True)
+        self._detail_card = ttk.Frame(body, style="Card.TFrame")
+        self._detail_card.pack(fill="x", expand=False)
         self._render_selected_session()
 
     def _toggle_archived_filter(self) -> None:
@@ -317,26 +321,34 @@ class HistoryWindow:
         if session.transcript is not None:
             ttk.Label(details, text=f"Transcript: {session.transcript.name}", style="Detail.TLabel", wraplength=580, justify="left").pack(anchor="w", pady=1)
 
-        actions = ttk.Frame(self._detail_card, style="Card.TFrame")
-        actions.pack(fill="x", pady=(12, 0))
+        # Buttons go into the fixed bar at the bottom of the window.
+        if self._button_bar is None:
+            return
+        for child in self._button_bar.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        # Left side: open-file actions then resume actions.
         specs = session_action_specs(session)
         for idx, (label, path) in enumerate(specs):
             if idx == 0:
-                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=True).pack(side="left")
+                self._button(self._button_bar, text=label, command=lambda p=path: self._open_file(p), primary=True).pack(side="left")
             else:
-                self._button(actions, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(6, 0))
+                self._button(self._button_bar, text=label, command=lambda p=path: self._open_file(p), primary=False).pack(side="left", padx=(6, 0))
         resume_actions = self._resume_actions(session)
         for label, callback in resume_actions:
-            self._button(actions, text=label, command=callback, primary=False).pack(side="left", padx=(6, 0))
+            self._button(self._button_bar, text=label, command=callback, primary=False).pack(side="left", padx=(6, 0))
+        # Right side: archive toggle then close (pack order puts close rightmost).
         if session.summary is not None and session.summary.exists():
             archive_label = "Unarchive" if session.archived else "Archive"
             self._button(
-                actions,
+                self._button_bar,
                 text=archive_label,
                 command=lambda s=session: self._toggle_archive(s),
                 primary=False,
-            ).pack(side="left", padx=(6, 0))
-        self._button(actions, text="Close", command=self.close, primary=False).pack(side="right")
+            ).pack(side="right", padx=(6, 0))
+        self._button(self._button_bar, text="Close", command=self.close, primary=False).pack(side="right")
 
     def _toggle_archive(self, session: "SessionFiles") -> None:
         archive_session(session.id, archived=not session.archived)

@@ -173,6 +173,7 @@ def test_history_window_renders_existing_actions_only(tmp_path, monkeypatch):
     window._button_border = "#d4dce8"
     window._button_accent_bg = "#2e72ff"
     window._button_accent_fg = "#000000"
+    window._button_bar = FakeFrame()
     window._open_file = lambda path: path
     window._reveal_in_finder = lambda path: path
 
@@ -232,6 +233,7 @@ def test_history_window_renders_unarchive_for_archived_session(tmp_path, monkeyp
     window._button_border = "#d4dce8"
     window._button_accent_bg = "#2e72ff"
     window._button_accent_fg = "#000000"
+    window._button_bar = FakeFrame()
     window._open_file = lambda path: path
     window._reveal_in_finder = lambda path: path
 
@@ -283,6 +285,7 @@ def test_history_window_renders_retry_actions_for_partial_sessions(tmp_path, mon
     window._button_border = "#d4dce8"
     window._button_accent_bg = "#2e72ff"
     window._button_accent_fg = "#000000"
+    window._button_bar = FakeFrame()
     window._open_file = lambda path: path
     window._reveal_in_finder = lambda path: path
 

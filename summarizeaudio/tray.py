@@ -252,11 +252,12 @@ class TrayApp:
         """
         self._create_icon()
         self._setup_signals()
-        root = self._window_manager.root
-        # icon.visible = True triggers an NSView update; dispatch to main thread.
-        self._tray.run_detached(
-            setup=lambda icon: root.after(0, lambda: setattr(icon, "visible", True))
-        )
+        # run_detached with a no-op setup so pystray marks itself ready but
+        # doesn't try to set visibility from a background thread (NSView updates
+        # must happen on the main thread on macOS).
+        self._tray.run_detached(setup=lambda icon: None)
+        # Show the icon here, on the main thread, before entering mainloop.
+        self._tray.visible = True
 
 
 def _check_single_instance() -> None:
