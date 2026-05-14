@@ -28,6 +28,78 @@ LOCK_FILE = Path.home() / ".summarizeaudio" / "app.lock"
 log = logging.getLogger(__name__)
 
 
+def _patch_pystray_darwin(icon: "pystray.Icon") -> None:
+    """Work around macOS Tahoe (NSSceneStatusItem) click-handling regression.
+
+    pystray calls NSStatusItem.setMenu_(), which on Tahoe may silently fail
+    to attach the popup menu to the click target.  The reliable modern path is:
+      1. Leave statusItem.menu NIL (so the button's action selector fires).
+      2. In the action handler, manually pop up the stored NSMenu.
+
+    We monkey-patch _update_menu to skip setMenu_ and instead store the menu,
+    then patch the ObjC delegate to pop it up on click.
+    """
+    import AppKit
+    import objc
+
+    # ── patch _update_menu ──────────────────────────────────────────────────
+    original_create_menu = icon._create_menu  # bound method
+
+    def _patched_update_menu(self) -> None:  # type: ignore[override]
+        callbacks: list = []
+        nsmenu = original_create_menu(self.menu, callbacks)
+        if nsmenu is not None:
+            # Keep the menu handle so the action handler can reach it.
+            self._menu_handle = (nsmenu, callbacks)
+            # Try the old path too – harmless if Tahoe ignores it.
+            try:
+                self._status_item.setMenu_(nsmenu)
+            except Exception:
+                pass
+        else:
+            self._menu_handle = None
+            try:
+                self._status_item.setMenu_(None)
+            except Exception:
+                pass
+
+    # Bind to the Icon *instance* so we don't break other icons.
+    icon._update_menu = _patched_update_menu.__get__(icon, type(icon))  # type: ignore[method-assign]
+
+    # ── patch ObjC delegate to pop up the menu on click ─────────────────────
+    # We subclass IconDelegate dynamically (ObjC doesn't allow per-instance
+    # method swaps), then swap the delegate on the button.
+    existing_delegate = icon._delegate
+
+    class _PatchedDelegate(type(existing_delegate)):  # type: ignore[misc]
+        @objc.namedSelector(b"activate:sender")
+        def activate_button(self, sender) -> None:  # type: ignore[override]
+            icon_ref = getattr(self, "icon", None)
+            if icon_ref is None:
+                return
+            menu_handle = getattr(icon_ref, "_menu_handle", None)
+            if menu_handle:
+                nsmenu, _callbacks = menu_handle
+                btn = icon_ref._status_item.button()
+                # Pop the menu up from the bottom-left of the button,
+                # which places it just below the menu bar item.
+                loc = AppKit.NSPoint(0, btn.bounds().size.height)
+                nsmenu.popUpMenuPositioningItem_atLocation_inView_(
+                    None, loc, btn
+                )
+            else:
+                # No menu – fall back to the original default action.
+                icon_ref()
+
+    new_delegate = _PatchedDelegate.alloc().init()
+    new_delegate.icon = existing_delegate.icon  # copy the weak/strong ref
+    icon._delegate = new_delegate
+    try:
+        icon._status_item.button().setTarget_(new_delegate)
+    except Exception as exc:
+        log.debug("_patch_pystray_darwin: could not swap delegate: %s", exc)
+
+
 def _load_icon(name: str) -> Image.Image:
     suffix = ".ico" if platform.system() == "Windows" else ".png"
     path = ASSETS / f"{name}{suffix}"
@@ -221,6 +293,8 @@ class TrayApp:
             title="SummarizeAudio",
             **kwargs,
         )
+        if sys.platform == "darwin":
+            _patch_pystray_darwin(self._tray)
         self._rebuild_menu()
 
     def _setup_signals(self) -> None:
