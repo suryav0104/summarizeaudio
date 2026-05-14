@@ -333,6 +333,7 @@ def test_workflow_window_chooser_uses_short_subtitle(tmp_path, monkeypatch):
 
     window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "audio")
     window._render_steps = lambda body: None
+    window._button_bar = FakeFrame()
     window._render_chooser(FakeFrame())
 
     assert window._subtitle.get() == "Select a file to continue."
@@ -463,6 +464,7 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     window._summary_path = summary_path
     window._summary_preview = "summary content"
     window._render_steps = lambda body: None
+    window._button_bar = FakeFrame()
     window._render_summary(FakeFrame())
 
     assert FakeText.instances
@@ -505,6 +507,7 @@ def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypa
     window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render_steps = lambda body: None
     window._default_name = "Project Update"
+    window._button_bar = FakeFrame()
     body = FakeFrame()
 
     window._render_name(body)
@@ -578,6 +581,7 @@ def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
     window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
     window._render_steps = lambda body: None
     window._prompt_text = "Prompt body"
+    window._button_bar = FakeFrame()
     body = FakeFrame()
     window._render_prompt(body)
 
@@ -586,7 +590,7 @@ def test_workflow_window_prompt_uses_light_widgets(tmp_path, monkeypatch):
     assert FakeText.instances[0].kwargs["fg"] == "#162033"
     button_texts = [btn.kwargs["text"] for btn in FakeButton.instances]
     assert button_texts == ["Update Prompt"]
-    assert FakeButton.instances[0].kwargs["fg"] == "#000000"
+    assert FakeButton.instances[0].kwargs["fg"] == "white"
 
 
 def test_workflow_window_prompt_footer_is_fixed(tmp_path, monkeypatch):
@@ -704,6 +708,7 @@ def test_workflow_window_retry_summary_uses_resumed_session_metadata(tmp_path, m
     FakeLabel.instances.clear()
 
     body = FakeFrame()
+    window._button_bar = FakeFrame()
     window._render_summary(body)
 
     button_texts = [btn.kwargs["text"] for btn in FakeButton.instances]
@@ -786,6 +791,5 @@ def test_workflow_window_has_compact_geometry(tmp_path, monkeypatch):
     window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
 
     assert window._window_width == 560
-    assert window._window_height == 480
-    assert fake_root.geometry_value == "560x480"
-    assert fake_root.minsize_value == (480, 400)
+    assert window._window_height == 520
+    assert fake_root.geometry_value == "560x520"

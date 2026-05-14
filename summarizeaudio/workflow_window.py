@@ -190,16 +190,14 @@ class WorkflowWindow:
         self._win.withdraw()
         self._win.title("SummarizeAudio")
         self._window_width = 560
-        self._window_height = 480
+        self._window_height = 520
         self._win.geometry(f"{self._window_width}x{self._window_height}")
-        self._win.minsize(480, 400)
-        self._win.resizable(True, True)
-        self._win.configure(bg="#f5f7fb")
+        self._win.resizable(False, False)
+        self._win.configure(bg="white")
         self._win.protocol("WM_DELETE_WINDOW", self._close)
 
         self._state = "chooser" if self._mode in {"audio", "text"} and self._source is None else "processing"
         self._step_text = "Choose a file to begin" if self._state == "chooser" else "Working…"
-        self._detail_text = ""
         self._resolver: object | None = None
         self._resolver_kind: str | None = None
         self._prompt_text = ""
@@ -210,7 +208,7 @@ class WorkflowWindow:
         self._resume_session = session_by_id(self._resume_session_id) if self._resume_session_id else None
         self._pipeline_started = False
         self._processing_started = False
-        self._step_state = "chooser"
+        self._step_state = "chooser" if self._state == "chooser" else "processing"
         self._transcription_pct: float = 0.0
 
         style = ttk.Style()
@@ -218,28 +216,30 @@ class WorkflowWindow:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("SummarizeAudio.TFrame", background="#f5f7fb")
+        style.configure("SummarizeAudio.TFrame", background="white")
         style.configure("Card.TFrame", background="white")
-        style.configure("Title.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 20, "bold"))
-        style.configure("Sub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 11))
+        style.configure("Title.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 20, "bold"))
+        style.configure("Sub.TLabel", background="white", foreground="#52607a", font=("Helvetica Neue", 11))
         style.configure("Step.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 13, "bold"))
         style.configure("Detail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 10))
+        style.configure("Sep.TFrame", background="#e0e6ef")
+        style.configure("StepBadge.TLabel", background="white", foreground="#52607a", font=("Helvetica Neue", 11))
         self._title = tk.StringVar(value="Prepare your workflow")
         self._subtitle = tk.StringVar(value="Pick a file, review the prompt, and finish with a final name.")
         self._status = tk.StringVar(value=self._step_text)
+        self._detail_text_var = tk.StringVar(value="")
+        self._button_bar: ttk.Frame | None = None
         self._content = None
         self._body = None
         self._progress = None
         self._det_progress_bar: ttk.Progressbar | None = None
         self._text_font = ("Helvetica Neue", 13)
         self._button_font = ("Helvetica Neue", 12, "bold")
-        self._button_bg = "#f6f8fb"
-        self._button_fg = "#000000"
-        self._button_secondary_bg = "#edf2f9"
-        self._button_secondary_fg = "#000000"
+        self._button_secondary_bg = "white"
+        self._button_secondary_fg = "#162033"
         self._button_border = "#d4dce8"
         self._button_accent_bg = "#2e72ff"
-        self._button_accent_fg = "#000000"
+        self._button_accent_fg = "white"
 
     # ── Public lifecycle ──────────────────────────────────────────────────────
 
@@ -323,12 +323,10 @@ class WorkflowWindow:
     def _clear_body(self) -> ttk.Frame:
         if self._content is not None:
             self._content.destroy()
-        self._content = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=14)
+        self._content = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(20, 16))
         self._content.pack(fill="both", expand=True)
-        card = ttk.Frame(self._content, style="Card.TFrame", padding=18)
-        card.pack(fill="both", expand=True)
-        self._body = card
-        return card
+        self._body = self._content
+        return self._content
 
     def _button(self, parent: tk.Misc, *, text: str, command, primary: bool = True) -> tk.Button:
         if primary:
@@ -339,7 +337,7 @@ class WorkflowWindow:
                 bg=self._button_accent_bg,
                 fg=self._button_accent_fg,
                 activebackground="#245fe0",
-                activeforeground="#000000",
+                activeforeground="white",
                 relief="flat",
                 bd=0,
                 padx=14,
@@ -448,15 +446,25 @@ class WorkflowWindow:
                     child.destroy()
                 except Exception:
                     pass
+        self._button_bar = None
 
-        header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(14, 14, 14, 0))
+        # Button bar — packed before header/content so it always claims bottom space.
+        self._button_bar = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(20, 10, 20, 16))
+        self._button_bar.pack(side="bottom", fill="x")
+        ttk.Frame(self._win, style="Sep.TFrame", height=1).pack(side="bottom", fill="x")
+
+        header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(20, 16, 20, 12))
         header.pack(fill="x")
-        ttk.Label(header, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
-        ttk.Label(header, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
+        header_left = ttk.Frame(header, style="SummarizeAudio.TFrame")
+        header_left.pack(side="left", fill="both", expand=True)
+        ttk.Label(header_left, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
+        ttk.Label(header_left, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
+        ttk.Frame(self._win, style="Sep.TFrame", height=1).pack(fill="x")
 
         body = self._clear_body()
         ttk.Label(body, textvariable=self._status, style="Step.TLabel").pack(anchor="w")
-        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(6, 10))
+        ttk.Label(body, textvariable=self._detail_text_var, style="Detail.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(6, 10))
 
         if self._state == "processing":
             progress_width = max(self._window_width - 80, 400)
@@ -502,15 +510,13 @@ class WorkflowWindow:
         self._subtitle.set("Select a file to continue.")
         self._status.set("Waiting for file selection")
         self._step_state = "chooser"
-        self._detail_text = (
+        self._detail_text_var.set(
             "Click Choose File to open the native picker. The window stays here and continues "
             "through processing."
         )
-        self._render_steps(body)
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(14, 0))
-        self._button(actions, text="Choose File", command=self._choose_file, primary=True).pack(side="left")
-        self._button(actions, text="Cancel", command=self._close, primary=False).pack(side="left", padx=(8, 0))
+        if self._button_bar is not None:
+            self._button(self._button_bar, text="Choose File", command=self._choose_file, primary=True).pack(side="left")
+            self._button(self._button_bar, text="Cancel", command=self._close, primary=False).pack(side="left", padx=(8, 0))
 
     def _render_processing(self, body: ttk.Frame) -> None:
         self._title.set("Processing")
@@ -523,20 +529,16 @@ class WorkflowWindow:
             self._status.set("Transcribe audio")
         else:
             self._status.set("Summarize transcript")
-        if self._step_state == "chooser":
-            self._step_state = "processing"
-        self._detail_text = "This window remains open while the app finishes the current step and moves to the next one."
-        self._render_steps(body)
+        self._detail_text_var.set("This window remains open while the app finishes the current step and moves to the next one.")
 
     def _render_prompt(self, body: ttk.Frame) -> None:
         self._stop_progress()
         self._title.set("Review prompt")
         self._subtitle.set("You can edit the summarization prompt without leaving the workflow.")
         self._status.set("Prompt override requested")
-        self._detail_text = "Keep {transcript} in the prompt. It will be replaced before summarization starts."
-        self._render_steps(body)
+        self._detail_text_var.set("Keep {transcript} in the prompt. It will be replaced before summarization starts.")
         prompt_box = ttk.Frame(body, style="Card.TFrame")
-        prompt_box.pack(side="top", fill="both", expand=True, pady=(6, 6))
+        prompt_box.pack(fill="both", expand=True, pady=(6, 0))
         text = self._text_widget(prompt_box, width=52, height=11)
         text.pack(fill="both", expand=True)
         text.insert("1.0", self._prompt_text)
@@ -553,18 +555,15 @@ class WorkflowWindow:
             self._render()
             self._raise_window()
 
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(side="bottom", fill="x", pady=(6, 0))
-        confirm_btn = self._button(actions, text="Update Prompt", command=confirm, primary=True)
-        confirm_btn.pack(side="right")
+        if self._button_bar is not None:
+            self._button(self._button_bar, text="Update Prompt", command=confirm, primary=True).pack(side="right")
 
     def _render_name(self, body: ttk.Frame) -> None:
         self._stop_progress()
         self._title.set("Name the output")
         self._subtitle.set("This name will be applied to the recording, transcript, and summary.")
         self._status.set("Name the output")
-        self._detail_text = "The suggested name is based on the topic we just processed."
-        self._render_steps(body)
+        self._detail_text_var.set("The suggested name is based on the topic we just processed.")
         name_var = tk.StringVar(value=self._default_name)
         entry = self._entry_widget(body, textvariable=name_var)
         entry.pack(fill="x", pady=(8, 8))
@@ -587,51 +586,42 @@ class WorkflowWindow:
             self._render()
             self._raise_window()
 
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x")
-        confirm_btn = self._button(actions, text="Save Name", command=confirm, primary=True)
-        confirm_btn.pack(side="left")
-        cancel_btn = self._button(actions, text="Cancel", command=cancel, primary=False)
-        cancel_btn.pack(side="left", padx=(8, 0))
+        if self._button_bar is not None:
+            self._button(self._button_bar, text="Save Name", command=confirm, primary=True).pack(side="left")
+            self._button(self._button_bar, text="Cancel", command=cancel, primary=False).pack(side="left", padx=(8, 0))
 
     def _render_message(self, body: ttk.Frame) -> None:
         self._stop_progress()
-        self._render_steps(body)
-        ttk.Label(body, text=self._detail_text, style="Detail.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(8, 12))
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x")
-        self._button(actions, text="Close", command=self._close, primary=True).pack(side="right")
+        if self._button_bar is not None:
+            self._button(self._button_bar, text="Close", command=self._close, primary=True).pack(side="right")
 
     def _render_summary(self, body: ttk.Frame) -> None:
         self._stop_progress()
         self._title.set("Summary complete")
         self._subtitle.set("Review the result or open the transcript or recording.")
         self._status.set("Review the result")
-        self._detail_text = (
+        self._detail_text_var.set(
             "The summary was saved successfully. You can open the transcript or recording if you "
             "want to review the source files, or close this window when you're done."
         )
-        self._render_steps(body)
-
         session = self._summary_session()
         preview_box = ttk.Frame(body, style="Card.TFrame")
-        preview_box.pack(fill="both", expand=True, pady=(6, 6))
+        preview_box.pack(fill="both", expand=True, pady=(6, 0))
         preview = self._text_widget(preview_box, width=56, height=8)
         preview.pack(fill="both", expand=True)
         preview.insert("1.0", self._summary_preview)
         preview.configure(state="disabled")
 
-        actions = ttk.Frame(body, style="Card.TFrame")
-        actions.pack(fill="x", pady=(6, 0))
-        action_specs = self._summary_action_specs(session)
-        for index, (label, path) in enumerate(action_specs):
-            self._button(
-                actions,
-                text=label,
-                command=lambda resolved=path: self._open_path(resolved),
-                primary=index == 0,
-            ).pack(side="left", padx=(0 if index == 0 else 8, 0))
-        self._button(actions, text="Close", command=self._close, primary=False).pack(side="right")
+        if self._button_bar is not None:
+            action_specs = self._summary_action_specs(session)
+            for index, (label, path) in enumerate(action_specs):
+                self._button(
+                    self._button_bar,
+                    text=label,
+                    command=lambda resolved=path: self._open_path(resolved),
+                    primary=index == 0,
+                ).pack(side="left", padx=(0 if index == 0 else 8, 0))
+            self._button(self._button_bar, text="Close", command=self._close, primary=False).pack(side="right")
 
     def _summary_session(self):
         summary_path = self._summary_path
@@ -674,17 +664,10 @@ class WorkflowWindow:
             specs.append(("Open Recording", session.audio))
         return specs
 
-    def _render_steps(self, body: ttk.Frame) -> None:
-        steps = ttk.Frame(body, style="Card.TFrame")
-        steps.pack(fill="x", pady=(4, 12))
-        for idx, label in enumerate(self._steps_for_mode()):
-            if idx < self._completed_step_count():
-                prefix = "✓"
-            elif idx == self._current_step_index():
-                prefix = "→"
-            else:
-                prefix = "•"
-            ttk.Label(steps, text=f"{prefix} {label}", style="Detail.TLabel").pack(anchor="w", pady=1)
+    def _step_badge_text(self) -> str:
+        steps = self._steps_for_mode()
+        current = self._current_step_index()
+        return f"Step {current + 1} of {len(steps)}"
 
     def _steps_for_mode(self) -> list[str]:
         if self._mode == "record":
@@ -762,7 +745,7 @@ class WorkflowWindow:
             pass
         if not path:
             self._step_text = "Waiting for file selection"
-            self._detail_text = "No file selected yet."
+            self._detail_text_var.set("No file selected yet.")
             self._render()
             return
         self._active_source = Path(path)
@@ -829,7 +812,7 @@ class WorkflowWindow:
             self._subtitle.set("SummarizeAudio")
             self._step_state = "message"
             self._state = "message"
-            self._detail_text = message
+            self._detail_text_var.set(message)
             self._render()
             self._raise_window()
         elif kind == "fatal_error":
@@ -838,7 +821,7 @@ class WorkflowWindow:
             self._subtitle.set("SummarizeAudio")
             self._step_state = "message"
             self._state = "message"
-            self._detail_text = message
+            self._detail_text_var.set(message)
             self._render()
             self._raise_window()
         elif kind == "error":
@@ -847,7 +830,7 @@ class WorkflowWindow:
             self._subtitle.set("SummarizeAudio")
             self._step_state = "message"
             self._state = "message"
-            self._detail_text = f"{message}\n\n{tb}"
+            self._detail_text_var.set(f"{message}\n\n{tb}")
             self._render()
             self._raise_window()
         elif kind == "summary_ready":
@@ -861,7 +844,6 @@ class WorkflowWindow:
                 self._resume_session = session_by_id(self._resume_session_id) or self._resume_session
             self._step_state = "message"
             self._state = "summary"
-            self._detail_text = f"The summary was saved to:\n{path}"
             self._render()
             self._raise_window()
         elif kind == "transcription_progress":
