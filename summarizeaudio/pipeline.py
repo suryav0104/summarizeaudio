@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import os
 import logging
 import queue
 import re
@@ -204,10 +205,20 @@ class Pipeline:
     ) -> None:
         cfg = self._cfg
         renamer = Renamer(cfg.storage.output_folder)
+        diarizer = None
+        hf_token = os.environ.get("HUGGINGFACE_ACCESS_TOKEN")
+        if hf_token:
+            try:
+                from summarizeaudio.diarizer import Diarizer
+                diarizer = Diarizer(hf_token)
+                log.info("Diarizer enabled (HuggingFace token found)")
+            except ImportError:
+                log.warning("pyannote.audio not installed — diarization disabled (pip install 'summarizeaudio[diarization]')")
         transcriber = Transcriber(
             model=cfg.whisper.model,
             language=cfg.whisper.language,
             ui_queue=self._ui_queue,
+            diarizer=diarizer,
         )
         summarizer = Summarizer(
             ollama=cfg.ollama,

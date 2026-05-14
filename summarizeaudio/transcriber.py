@@ -4,6 +4,10 @@ import logging
 import queue
 import traceback
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from summarizeaudio.diarizer import Diarizer
 
 log = logging.getLogger(__name__)
 
@@ -13,10 +17,17 @@ from summarizeaudio.error_handler import friendly_message, post_error
 class Transcriber:
     """Wraps faster-whisper for local transcription."""
 
-    def __init__(self, model: str, language: str, ui_queue: queue.Queue) -> None:
+    def __init__(
+        self,
+        model: str,
+        language: str,
+        ui_queue: queue.Queue,
+        diarizer: "Diarizer | None" = None,
+    ) -> None:
         self._model_name = model
         self._language = language
         self._ui_queue = ui_queue
+        self._diarizer = diarizer
         self._model = None  # lazy-loaded
 
     def _is_model_cached(self) -> bool:
@@ -61,12 +72,16 @@ class Transcriber:
             duration = getattr(info, "duration", 0) or 0
             log.info("Transcription detected language=%s duration=%.1fs",
                      getattr(info, "language", "?"), duration)
-            parts: list[str] = []
+            all_segs = []
             for seg in segments:
-                parts.append(seg.text.strip())
+                all_segs.append(seg)
                 if on_progress is not None and duration > 0:
                     on_progress(min(100.0, seg.end / duration * 100))
-            text = " ".join(parts)
+            if self._diarizer is not None:
+                text = self._diarizer.label(audio_path, all_segs)
+                log.info("Diarization complete: %d segments labeled", len(all_segs))
+            else:
+                text = " ".join(seg.text.strip() for seg in all_segs)
             out_txt.write_text(text, encoding="utf-8")
             log.info("Transcription written: %d chars → %s", len(text), out_txt)
         except Exception as exc:

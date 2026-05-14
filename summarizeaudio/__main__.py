@@ -2,7 +2,10 @@ def main() -> None:
     import logging
     import os
     import warnings
+    from dotenv import load_dotenv
     from summarizeaudio.config import LOG_PATH
+
+    load_dotenv()  # load HUGGINGFACE_ACCESS_TOKEN and other vars from .env
 
     # faster-whisper/ctranslate2 can leave a multiprocessing semaphore for
     # Python's resource_tracker to clean up at shutdown. The warning is noisy
