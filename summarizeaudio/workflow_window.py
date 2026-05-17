@@ -5,10 +5,12 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import tkinter as tk
+import tkinter.font as tkfont
 import tkinter.ttk as ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -170,6 +172,139 @@ class _MarqueeProgress:
         self._after_id = self._canvas.after(self._interval, self._tick)
 
 
+class _StepIndicator:
+    """Horizontal numbered pill stepper shown only during processing.
+
+    Done steps  — dark circle + ✓,  mid-gray label.
+    Active step  — dark circle + number, bold dark label.
+    Future steps — light circle + number, light-gray label.
+    Connector lines: dark between done segments, light otherwise.
+    No blue is used; the palette stays within the existing black/gray family.
+    """
+
+    _CIRCLE_D = 20
+    _CIRCLE_R = 10
+    _GAP = 4       # px between circle right-edge and label
+    _HEIGHT = 24   # canvas height
+
+    _DONE_BG  = "#162033"
+    _DONE_FG  = "white"
+    _ACT_BG   = "#162033"
+    _ACT_FG   = "white"
+    _FUT_BG   = "#e0e6ef"
+    _FUT_FG   = "#8898b0"
+
+    _DONE_LABEL   = "#52607a"
+    _ACTIVE_LABEL = "#162033"
+    _FUT_LABEL    = "#a0aabb"
+
+    _DONE_LINE = "#162033"
+    _FUT_LINE  = "#d4dce8"
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        steps: list[str],
+        current_index: int,
+        width: int,
+        step_elapsed: dict[int, str] | None = None,
+    ) -> None:
+        self._steps = steps
+        self._current = current_index
+        self._step_elapsed = step_elapsed if step_elapsed is not None else {}
+        self._base_width = width
+        self._last_width: int | None = None
+        # Reserve extra vertical space for elapsed labels when parameter is provided.
+        self._height = 40 if step_elapsed is not None else self._HEIGHT
+        self._canvas = tk.Canvas(
+            parent,
+            width=width,
+            height=self._height,
+            bg="white",
+            highlightthickness=0,
+            bd=0,
+        )
+        self._canvas.bind("<Configure>", self._on_configure)
+        self._draw(width)
+
+    def pack(self, **kwargs) -> None:
+        self._canvas.pack(**kwargs)
+
+    def _on_configure(self, event) -> None:
+        w = max(event.width, self._base_width)
+        if w == self._last_width:
+            return
+        self._draw(w)
+
+    def _draw(self, width: int) -> None:
+        self._last_width = width
+        self._canvas.delete("all")
+        steps = self._steps
+        current = self._current
+        n = len(steps)
+        if n == 0:
+            return
+
+        cy = self._height // 2
+        fn = tkfont.Font(family="Helvetica Neue", size=10)
+        fb = tkfont.Font(family="Helvetica Neue", size=10, weight="bold")
+        fe = tkfont.Font(family="Helvetica Neue", size=8)
+
+        step_widths: list[int] = []
+        for i, name in enumerate(steps):
+            tw = (fb if i == current else fn).measure(name)
+            step_widths.append(self._CIRCLE_D + self._GAP + tw)
+
+        total_step_w = sum(step_widths)
+        available_line_w = max(0, width - total_step_w)
+        line_w = available_line_w / max(1, n - 1)
+
+        x = 0.0
+        for i, name in enumerate(steps):
+            if i > 0:
+                lx1, lx2 = x, x + line_w
+                color = self._DONE_LINE if i <= current else self._FUT_LINE
+                self._canvas.create_rectangle(lx1, cy - 1, lx2, cy + 1, fill=color, outline="")
+                x += line_w
+
+            cx_c = x + self._CIRCLE_R
+            r = self._CIRCLE_R
+            if i < current:
+                bg, fg, txt = self._DONE_BG, self._DONE_FG, "✓"
+                lc, lf = self._DONE_LABEL, fn
+            elif i == current:
+                bg, fg, txt = self._ACT_BG, self._ACT_FG, str(i + 1)
+                lc, lf = self._ACTIVE_LABEL, fb
+            else:
+                bg, fg, txt = self._FUT_BG, self._FUT_FG, str(i + 1)
+                lc, lf = self._FUT_LABEL, fn
+
+            self._canvas.create_oval(
+                cx_c - r, cy - r, cx_c + r, cy + r,
+                fill=bg, outline="",
+            )
+            self._canvas.create_text(
+                cx_c, cy,
+                text=txt,
+                fill=fg,
+                font=("Helvetica Neue", 9, "bold"),
+            )
+            lx = x + self._CIRCLE_D + self._GAP
+            self._canvas.create_text(lx, cy, text=name, fill=lc, font=lf, anchor="w")
+
+            if i < current and i in self._step_elapsed:
+                self._canvas.create_text(
+                    cx_c, cy + 13,
+                    text=self._step_elapsed[i],
+                    fill="#8898b0",
+                    font=fe,
+                    anchor="center",
+                )
+
+            x += step_widths[i]
+
+
 class WorkflowWindow:
     def __init__(
         self,
@@ -210,6 +345,11 @@ class WorkflowWindow:
         self._processing_started = False
         self._step_state = "chooser" if self._state == "chooser" else "processing"
         self._transcription_pct: float = 0.0
+        self._step_start_time: float | None = None
+        self._step_durations: dict[str, str] = {}
+        self._elapsed_tick_id: str | None = None
+        self._timing_step: str | None = None
+        self._elapsed_var = tk.StringVar(value="")
 
         style = ttk.Style()
         try:
@@ -246,8 +386,8 @@ class WorkflowWindow:
     def show(self) -> None:
         """Show the window and start the pipeline if mode requires it."""
         self._render()
-        self._win.deiconify()
         self._center()
+        self._win.deiconify()
         self._focus()
         if self._state == "processing":
             self._start_pipeline()
@@ -279,6 +419,11 @@ class WorkflowWindow:
         self._transcription_pct = 0.0
         self._pipeline_started = False
         self._processing_started = False
+        self._cancel_elapsed_tick()
+        self._step_start_time = None
+        self._step_durations = {}
+        self._timing_step = None
+        self._elapsed_var.set("")
         self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
         self._render()
         self._focus()
@@ -455,11 +600,22 @@ class WorkflowWindow:
 
         header = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(20, 16, 20, 12))
         header.pack(fill="x")
-        header_left = ttk.Frame(header, style="SummarizeAudio.TFrame")
-        header_left.pack(side="left", fill="both", expand=True)
-        ttk.Label(header_left, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
-        ttk.Label(header_left, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
-        ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
+        if self._state == "processing":
+            ttk.Label(header, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
+            ttk.Label(header, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
+            _StepIndicator(
+                header,
+                steps=self._step_short_names(),
+                current_index=self._current_step_index(),
+                width=self._window_width - 40,
+                step_elapsed=self._step_elapsed_by_index(),
+            ).pack(fill="x", pady=(10, 2))
+        else:
+            header_left = ttk.Frame(header, style="SummarizeAudio.TFrame")
+            header_left.pack(side="left", fill="both", expand=True)
+            ttk.Label(header_left, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
+            ttk.Label(header_left, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
+            ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
         ttk.Frame(self._win, style="Sep.TFrame", height=1).pack(fill="x")
 
         body = self._clear_body()
@@ -468,14 +624,14 @@ class WorkflowWindow:
 
         if self._state == "processing":
             progress_width = max(self._window_width - 80, 400)
-            if self._step_state == "summarizing":
+            if self._step_state in {"summarizing", "diarizing"}:
                 self._det_progress_bar = None
                 self._progress = _MarqueeProgress(
                     body,
                     width=progress_width,
                     height=32,
                 )
-                self._progress.pack(fill="x", pady=(0, 14))
+                self._progress.pack(fill="x", pady=(0, 4))
                 self._progress.start()
             else:
                 self._det_progress_bar = None
@@ -485,8 +641,15 @@ class WorkflowWindow:
                     height=32,
                     mode="determinate",
                 )
-                self._progress.pack(fill="x", pady=(0, 14))
+                self._progress.pack(fill="x", pady=(0, 4))
                 self._progress.set_percent(self._transcription_pct)
+            tk.Label(
+                body,
+                textvariable=self._elapsed_var,
+                bg="white",
+                fg="#8898b0",
+                font=("Helvetica Neue", 10),
+            ).pack(anchor="w", pady=(0, 10))
         else:
             self._progress = None
             self._det_progress_bar = None
@@ -523,6 +686,8 @@ class WorkflowWindow:
         self._subtitle.set("We keep the workflow in one window from start to finish.")
         if self._step_state == "summarizing":
             self._status.set("Summarize transcript")
+        elif self._step_state == "diarizing":
+            self._status.set("Diarize the audio")
         elif self._mode == "record":
             self._status.set("Transcribe recording")
         elif self._mode == "audio":
@@ -669,57 +834,93 @@ class WorkflowWindow:
         current = self._current_step_index()
         return f"Step {current + 1} of {len(steps)}"
 
+    def _has_diarizer(self) -> bool:
+        return bool(os.environ.get("HUGGINGFACE_ACCESS_TOKEN"))
+
     def _steps_for_mode(self) -> list[str]:
         if self._mode == "record":
-            return ["Record audio", "Transcribe recording", "Summarize transcript", "Name the output"]
+            steps = ["Record audio", "Transcribe recording"]
+            if self._has_diarizer():
+                steps.append("Diarize the audio")
+            steps += ["Summarize transcript", "Name the output"]
+            return steps
         if self._mode == "audio":
-            return ["Choose audio file", "Transcribe audio", "Summarize transcript", "Name the output"]
+            steps = ["Choose audio file", "Transcribe audio"]
+            if self._has_diarizer():
+                steps.append("Diarize the audio")
+            steps += ["Summarize transcript", "Name the output"]
+            return steps
         return ["Choose transcript file", "Summarize transcript", "Name the output"]
 
+    def _step_short_names(self) -> list[str]:
+        mapping = {
+            "Record audio": "Record",
+            "Transcribe recording": "Transcribe",
+            "Transcribe audio": "Transcribe",
+            "Diarize the audio": "Diarize",
+            "Summarize transcript": "Summarize",
+            "Name the output": "Name",
+            "Choose audio file": "Choose file",
+            "Choose transcript file": "Choose file",
+        }
+        return [mapping.get(s, s) for s in self._steps_for_mode()]
+
     def _completed_step_count(self) -> int:
+        d = self._has_diarizer()
         if self._mode == "record":
-            if self._step_state in {"chooser", "processing"}:
-                return 1 if self._step_state == "processing" else 0
-            if self._step_state in {"summarizing", "prompt"}:
+            if self._step_state == "chooser":
+                return 0
+            if self._step_state == "processing":
+                return 1
+            if self._step_state == "diarizing":
                 return 2
+            if self._step_state in {"summarizing", "prompt"}:
+                return 3 if d else 2
             if self._step_state == "name":
-                return 3
+                return 4 if d else 3
             if self._step_state == "message":
-                return 4
+                return len(self._steps_for_mode())
         if self._mode in {"audio", "text"}:
             if self._step_state == "chooser":
                 return 0
             if self._step_state == "processing":
                 return 1
+            if self._step_state == "diarizing":
+                return 2
             if self._step_state in {"summarizing", "prompt"}:
-                return 1 if self._mode == "text" else 2
+                return 1 if self._mode == "text" else (3 if d else 2)
             if self._step_state == "name":
-                return 2 if self._mode == "text" else 3
+                return 2 if self._mode == "text" else (4 if d else 3)
             if self._step_state == "message":
                 return len(self._steps_for_mode())
         return 0
 
     def _current_step_index(self) -> int:
+        d = self._has_diarizer()
         if self._mode == "record":
             if self._step_state == "chooser":
                 return 0
             if self._step_state == "processing":
                 return 1
-            if self._step_state in {"summarizing", "prompt"}:
+            if self._step_state == "diarizing":
                 return 2
+            if self._step_state in {"summarizing", "prompt"}:
+                return 3 if d else 2
             if self._step_state == "name":
-                return 3
-            return 3
+                return 4 if d else 3
+            return len(self._steps_for_mode()) - 1
         if self._mode == "audio":
             if self._step_state == "chooser":
                 return 0
             if self._step_state == "processing":
                 return 1
-            if self._step_state in {"summarizing", "prompt"}:
+            if self._step_state == "diarizing":
                 return 2
+            if self._step_state in {"summarizing", "prompt"}:
+                return 3 if d else 2
             if self._step_state == "name":
-                return 3
-            return 3
+                return 4 if d else 3
+            return len(self._steps_for_mode()) - 1
         if self._step_state == "chooser":
             return 0
         if self._step_state == "processing":
@@ -759,6 +960,7 @@ class WorkflowWindow:
         if self._processing_started:
             return
         self._processing_started = True
+        self._start_step_timer("processing")
 
         def run() -> None:
             if self._mode == "record":
@@ -835,6 +1037,7 @@ class WorkflowWindow:
             self._raise_window()
         elif kind == "summary_ready":
             _, path = item
+            self._finish_step_timer()
             self._summary_path = Path(path)
             try:
                 self._summary_preview = self._summary_path.read_text(encoding="utf-8", errors="replace")
@@ -853,16 +1056,107 @@ class WorkflowWindow:
                 self._progress.set_percent(pct)
         elif kind == "workflow_phase":
             _, phase = item
-            if phase == "summarizing":
+            if phase == "diarizing":
+                self._finish_step_timer()
+                self._step_state = "diarizing"
+                self._state = "processing"
+                self._start_step_timer("diarizing")
+                self._render()
+                self._raise_window()
+            elif phase == "summarizing":
+                self._finish_step_timer()
                 self._step_state = "summarizing"
                 self._state = "processing"
+                self._start_step_timer("summarizing")
                 self._render()
                 self._raise_window()
         elif kind == "set_icon":
             return
 
+    def _show_toast(self, message: str) -> None:
+        """Show a brief non-blocking banner at the top of the window."""
+        if hasattr(self, "_toast_after_id") and self._toast_after_id is not None:
+            try:
+                self._win.after_cancel(self._toast_after_id)
+            except Exception:
+                pass
+            self._toast_after_id = None
+        if hasattr(self, "_toast_frame") and self._toast_frame is not None:
+            try:
+                self._toast_frame.destroy()
+            except Exception:
+                pass
+            self._toast_frame = None
+        toast = tk.Frame(self._win, bg="#f59e0b", padx=16, pady=10)
+        tk.Label(toast, text=message, bg="#f59e0b", fg="white",
+                 font=("Helvetica Neue", 11), wraplength=520).pack()
+        toast.place(x=0, y=0, relwidth=1.0)
+        self._toast_frame = toast
+
+        def _dismiss() -> None:
+            try:
+                toast.destroy()
+            except Exception:
+                pass
+            self._toast_frame = None
+            self._toast_after_id = None
+
+        self._toast_after_id = self._win.after(3000, _dismiss)
+
+    # ── Elapsed time tracking ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _fmt_elapsed(seconds: float) -> str:
+        s = int(seconds)
+        return f"{s // 60:02d}:{s % 60:02d} min"
+
+    def _cancel_elapsed_tick(self) -> None:
+        if self._elapsed_tick_id is not None:
+            try:
+                self._win.after_cancel(self._elapsed_tick_id)
+            except Exception:
+                pass
+            self._elapsed_tick_id = None
+
+    def _start_step_timer(self, step_key: str) -> None:
+        self._cancel_elapsed_tick()
+        self._timing_step = step_key
+        self._step_start_time = time.time()
+        self._elapsed_var.set("00:00 min")
+        self._elapsed_tick_id = self._win.after(1000, self._elapsed_tick)
+
+    def _finish_step_timer(self) -> None:
+        self._cancel_elapsed_tick()
+        if self._step_start_time is not None and self._timing_step is not None:
+            elapsed = time.time() - self._step_start_time
+            self._step_durations[self._timing_step] = self._fmt_elapsed(elapsed)
+        self._step_start_time = None
+        self._timing_step = None
+
+    def _elapsed_tick(self) -> None:
+        try:
+            if not self._win.winfo_exists():
+                return
+        except Exception:
+            return
+        if self._step_start_time is not None:
+            self._elapsed_var.set(self._fmt_elapsed(time.time() - self._step_start_time))
+        self._elapsed_tick_id = self._win.after(1000, self._elapsed_tick)
+
+    def _step_elapsed_by_index(self) -> dict[int, str]:
+        if not self._step_durations:
+            return {}
+        key_for = {"Transcribe": "processing", "Diarize": "diarizing", "Summarize": "summarizing"}
+        result: dict[int, str] = {}
+        for idx, name in enumerate(self._step_short_names()):
+            key = key_for.get(name)
+            if key and key in self._step_durations:
+                result[idx] = self._step_durations[key]
+        return result
+
     def _close(self) -> None:
         self._stop_progress()
+        self._cancel_elapsed_tick()
         try:
             self._win.destroy()
         except Exception:

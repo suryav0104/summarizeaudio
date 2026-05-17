@@ -61,7 +61,7 @@ class Transcriber:
                 )
                 raise
 
-    def transcribe(self, audio_path: Path, out_txt: Path, on_progress=None) -> None:
+    def transcribe(self, audio_path: Path, out_txt: Path, on_progress=None, on_diarize_start=None) -> None:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         self._load_model()
@@ -78,6 +78,8 @@ class Transcriber:
                 if on_progress is not None and duration > 0:
                     on_progress(min(100.0, seg.end / duration * 100))
             if self._diarizer is not None:
+                if on_diarize_start is not None:
+                    on_diarize_start()
                 text = self._diarizer.label(audio_path, all_segs)
                 log.info("Diarization complete: %d segments labeled", len(all_segs))
             else:

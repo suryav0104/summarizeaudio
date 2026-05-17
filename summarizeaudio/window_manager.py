@@ -4,7 +4,7 @@ import logging
 import queue
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import tkinter as tk
 
@@ -46,6 +46,7 @@ class WindowManager:
         self._root.after(100, self._pump)
         self._workflow_win: WorkflowWindow | None = None
         self._history_win: HistoryWindow | None = None
+        self._dock_icon: Any = None
 
     @property
     def root(self) -> tk.Tk:
@@ -59,12 +60,22 @@ class WindowManager:
     ) -> None:
         from summarizeaudio.workflow_window import WorkflowWindow
 
-        if self._workflow_win is not None and _win_alive(self._workflow_win._win):
-            if self._workflow_win.pipeline_active:
-                self._workflow_win._focus()
-                return
-            self._workflow_win.retarget(mode, source, resume_session_id)
+        # History window open — one window at a time.
+        if self._history_win is not None and _win_alive(self._history_win._win):
+            self._history_win._focus()
+            self._history_win._show_toast("Close this window before starting a new action.")
             return
+
+        if self._workflow_win is not None and _win_alive(self._workflow_win._win):
+            if self._workflow_win._step_state == "chooser":
+                # Nothing in progress — safe to retarget silently.
+                self._workflow_win.retarget(mode, source, resume_session_id)
+            else:
+                # User is engaged — bring to front and explain.
+                self._workflow_win._focus()
+                self._workflow_win._show_toast("Close this window before starting a new action.")
+            return
+
         self._workflow_win = WorkflowWindow(
             self._root, self._cfg, self._ui_queue, mode, source, resume_session_id
         )
@@ -73,9 +84,16 @@ class WindowManager:
     def show_history(self) -> None:
         from summarizeaudio.history_window import HistoryWindow
 
-        if self._history_win is not None and _win_alive(self._history_win._win):
-            self._history_win.refresh()
+        # Workflow window open — one window at a time.
+        if self._workflow_win is not None and _win_alive(self._workflow_win._win):
+            self._workflow_win._focus()
+            self._workflow_win._show_toast("Close this window before starting a new action.")
             return
+
+        if self._history_win is not None and _win_alive(self._history_win._win):
+            self._history_win._focus()  # Already open — just bring to front, no toast.
+            return
+
         self._history_win = HistoryWindow(self._root, self._cfg, self._ui_queue)
         self._history_win.show()
 
@@ -89,6 +107,43 @@ class WindowManager:
         self._workflow_win = None
         self._history_win = None
 
+    def _load_dock_icon(self) -> Any:
+        try:
+            import AppKit
+            path = Path(__file__).parent.parent / "assets" / "icon_idle.png"
+            if path.exists():
+                return AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
+        except Exception:
+            pass
+        return None
+
+    def _update_activation_policy(self) -> None:
+        """Show app in Dock + Cmd-Tab when a window is open; hide when all closed."""
+        if sys.platform != "darwin":
+            return
+        try:
+            import AppKit
+            nsapp = AppKit.NSApplication.sharedApplication()
+            any_open = (
+                (self._workflow_win is not None and _win_alive(self._workflow_win._win))
+                or (self._history_win is not None and _win_alive(self._history_win._win))
+            )
+            policy = (
+                AppKit.NSApplicationActivationPolicyRegular
+                if any_open
+                else AppKit.NSApplicationActivationPolicyAccessory
+            )
+            if nsapp.activationPolicy() != policy:
+                nsapp.setActivationPolicy_(policy)
+                if any_open:
+                    if self._dock_icon is None:
+                        self._dock_icon = self._load_dock_icon()
+                    if self._dock_icon is not None:
+                        nsapp.setApplicationIconImage_(self._dock_icon)
+                    nsapp.activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+
     def _pump(self) -> None:
         try:
             while True:
@@ -96,6 +151,7 @@ class WindowManager:
                 self._handle(item)
         except queue.Empty:
             pass
+        self._update_activation_policy()
         if self._root.winfo_exists():
             self._root.after(100, self._pump)
 

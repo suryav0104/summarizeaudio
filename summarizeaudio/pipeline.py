@@ -365,8 +365,18 @@ class Pipeline:
             except queue.Full:
                 pass
 
+        def _on_diarize_start() -> None:
+            try:
+                self._ui_queue.put_nowait(("workflow_phase", "diarizing"))
+            except queue.Full:
+                pass
+
         try:
-            transcriber.transcribe(transcription_source, tmp_txt, on_progress=_on_transcription_progress)
+            transcriber.transcribe(
+                transcription_source, tmp_txt,
+                on_progress=_on_transcription_progress,
+                on_diarize_start=_on_diarize_start,
+            )
         except Exception as exc:
             log.exception("Transcription failed for %s", audio_for_transcription)
             update_session_record(
@@ -418,6 +428,7 @@ class Pipeline:
             )
             return
         log.info("Summarizing %d chars → %s", len(transcript_text), tmp_md)
+        self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
         try:
             summarizer.summarize(transcript_text, tmp_md)
         except OllamaError as exc:
@@ -445,7 +456,6 @@ class Pipeline:
             summary_path=tmp_md,
             status="partial",
         )
-        self._ui_queue.put_nowait(("workflow_phase", "summarizing"))
         final_name = self._request_final_name(_derive_default_name(summary_text, fallback=session_name))
         if final_name is None:
             update_session_record(

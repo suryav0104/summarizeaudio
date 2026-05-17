@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,24 @@ class Diarizer:
         kwargs: dict[str, Any] = {}
         if num_speakers is not None:
             kwargs["num_speakers"] = num_speakers
-        result = self._pipeline(str(audio_path), **kwargs)
+
+        # pyannote's crop() requires an exact sample count, but MP3 decoding
+        # produces slightly fewer samples than round(duration × sr) due to
+        # encoder-delay padding.  Convert to a clean mono 16 kHz WAV first.
+        import torchaudio  # type: ignore[import]
+        waveform, sr = torchaudio.load(str(audio_path))
+        if sr != 16000:
+            waveform = torchaudio.functional.resample(waveform, sr, 16000)
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = Path(tmp.name)
+        try:
+            torchaudio.save(str(wav_path), waveform, 16000)
+            result = self._pipeline(str(wav_path), **kwargs)
+        finally:
+            wav_path.unlink(missing_ok=True)
+
         annotation = result.speaker_diarization
 
         # Build (start, end, raw_label) turns from pyannote output

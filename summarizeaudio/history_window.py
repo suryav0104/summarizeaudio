@@ -91,8 +91,8 @@ class HistoryWindow:
 
     def show(self) -> None:
         self._render()
-        self._win.deiconify()
         self._center()
+        self._win.deiconify()
         self._focus()
 
     def refresh(self) -> None:
@@ -106,6 +106,36 @@ class HistoryWindow:
             self._win.destroy()
         except Exception:
             pass
+
+    def _show_toast(self, message: str) -> None:
+        """Show a brief non-blocking banner at the top of the window."""
+        if hasattr(self, "_toast_after_id") and self._toast_after_id is not None:
+            try:
+                self._win.after_cancel(self._toast_after_id)
+            except Exception:
+                pass
+            self._toast_after_id = None
+        if hasattr(self, "_toast_frame") and self._toast_frame is not None:
+            try:
+                self._toast_frame.destroy()
+            except Exception:
+                pass
+            self._toast_frame = None
+        toast = tk.Frame(self._win, bg="#f59e0b", padx=16, pady=10)
+        tk.Label(toast, text=message, bg="#f59e0b", fg="white",
+                 font=("Helvetica Neue", 11), wraplength=700).pack()
+        toast.place(x=0, y=0, relwidth=1.0)
+        self._toast_frame = toast
+
+        def _dismiss() -> None:
+            try:
+                toast.destroy()
+            except Exception:
+                pass
+            self._toast_frame = None
+            self._toast_after_id = None
+
+        self._toast_after_id = self._win.after(3000, _dismiss)
 
     def _focus(self) -> None:
         self._win.lift()
@@ -373,14 +403,14 @@ class HistoryWindow:
         source = session.audio if session.audio is not None and session.audio.exists() else getattr(session, "source_path", None)
         if source is None:
             return
+        self.close()
         self._ui_queue.put(("show_workflow", "audio", source, session.id))
-        self._win.withdraw()
 
     def _resume_text_session(self, session: "SessionFiles") -> None:
         if session.transcript is None or not session.transcript.exists():
             return
+        self.close()
         self._ui_queue.put(("show_workflow", "text", session.transcript, session.id))
-        self._win.withdraw()
 
     def _session_display_label(self, session) -> str:
         return session.label
