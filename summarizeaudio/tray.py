@@ -199,19 +199,33 @@ class TrayApp:
     def _model_label(self, model: str, label: str) -> str:
         return f"✓ {label}" if self._cfg.ollama.model == model else label
 
+    def _remove_tray_icon(self) -> None:
+        """Explicitly remove the NSStatusItem via AppKit before the process exits.
+
+        pystray's visible=False and icon.stop() both silently fail on macOS
+        Tahoe when run_detached is used, because pystray's internal _running
+        flag is never set through the normal path.  Calling removeStatusItem_
+        directly is the only reliable way to ensure the icon disappears.
+        """
+        if sys.platform != "darwin" or self._tray is None:
+            return
+        try:
+            from AppKit import NSStatusBar  # type: ignore[import]
+            item = getattr(self._tray, "_status_item", None)
+            if item is not None:
+                NSStatusBar.systemStatusBar().removeStatusItem_(item)
+                self._tray._status_item = None  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
-        # Hide the icon immediately so it vanishes from the menu bar even if
-        # the subsequent stop/quit sequence stalls.
-        try:
-            self._tray.visible = False
-        except Exception:
-            pass
         # Defer stop + Tk quit to after this menu callback returns.  Calling
-        # icon.stop() synchronously from inside a pystray callback can deadlock
-        # on macOS because pystray is integrated into Tk's NSApplication loop.
+        # icon.stop() synchronously inside a pystray callback can deadlock on
+        # macOS because pystray is integrated into Tk's NSApplication loop.
         def _do_quit() -> None:
+            self._remove_tray_icon()
             try:
                 icon.stop()
             except Exception:
@@ -378,6 +392,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def run() -> None:
+    app: "TrayApp | None" = None
     try:
         _check_single_instance()
         app = TrayApp()
@@ -394,6 +409,9 @@ def run() -> None:
         notify(msg, "SummarizeAudio Error")
         raise SystemExit(1)
     finally:
+        # Remove the NSStatusItem before os._exit so macOS actually clears it.
+        if app is not None:
+            app._remove_tray_icon()
         LOCK_FILE.unlink(missing_ok=True)
         # Force-terminate so daemon threads (Whisper, pyannote, Ollama) can't
         # keep a ghost process — and therefore a ghost menu bar icon — alive.
