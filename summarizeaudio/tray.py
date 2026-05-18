@@ -202,11 +202,31 @@ class TrayApp:
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
-        icon.stop()
+        # Hide the icon immediately so it vanishes from the menu bar even if
+        # the subsequent stop/quit sequence stalls.
         try:
-            self._window_manager.root.after(0, self._window_manager.root.quit)
+            self._tray.visible = False
         except Exception:
             pass
+        # Defer stop + Tk quit to after this menu callback returns.  Calling
+        # icon.stop() synchronously from inside a pystray callback can deadlock
+        # on macOS because pystray is integrated into Tk's NSApplication loop.
+        def _do_quit() -> None:
+            try:
+                icon.stop()
+            except Exception:
+                pass
+            try:
+                self._window_manager.root.quit()
+            except Exception:
+                pass
+        try:
+            self._window_manager.root.after(50, _do_quit)
+        except Exception:
+            _do_quit()
+        # Hard-kill safety net: if the process is still alive after 3 s
+        # (e.g. a stuck daemon thread), force-exit unconditionally.
+        threading.Timer(3.0, lambda: os._exit(0)).start()
 
     # ── Icon state callback (invoked from WindowManager on main thread) ───────
 
@@ -375,3 +395,6 @@ def run() -> None:
         raise SystemExit(1)
     finally:
         LOCK_FILE.unlink(missing_ok=True)
+        # Force-terminate so daemon threads (Whisper, pyannote, Ollama) can't
+        # keep a ghost process — and therefore a ghost menu bar icon — alive.
+        os._exit(0)
