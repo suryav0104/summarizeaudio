@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import queue
 import subprocess
@@ -49,14 +50,14 @@ class _MarqueeProgress:
         self._bar_ratio = bar_ratio
         self._bar_width = max(30, int(width * bar_ratio))
         self._radius = max(4, height // 2)
-        self._bar_x = 0
-        self._direction = 1
+        self._bar_x = 0.0
         self._track_items: list[int] = []
         self._bar_items: list[int] = []
         self._after_id: str | None = None
         self._running = False
         self._interval = 16
-        self._step = 4
+        self._anim_start: float | None = None
+        self._period = 3.5  # seconds for one full left-right-left cycle
         self._mode = mode
         self._pct: float = 0.0
         self._text_item: int | None = None
@@ -86,6 +87,7 @@ class _MarqueeProgress:
         if self._running:
             return
         self._running = True
+        self._anim_start = time.time()
         self._tick()
 
     def stop(self) -> None:
@@ -155,22 +157,13 @@ class _MarqueeProgress:
             return
         width = max(self._canvas.winfo_width(), self._base_width)
         max_x = max(0, width - self._bar_width)
-        self._bar_x += self._step * self._direction
-        if self._bar_x >= max_x:
-            self._bar_x = max_x
-            self._direction = -1
-        elif self._bar_x <= 0:
-            self._bar_x = 0
-            self._direction = 1
-        self._set_capsule(self._track_items, 0, 2, width, self._height - 2, self._track_color)
-        self._set_capsule(
-            self._bar_items,
-            self._bar_x,
-            2,
-            self._bar_x + self._bar_width,
-            self._height - 2,
-            self._bar_color,
-        )
+        if self._anim_start is not None and max_x > 0:
+            t = (time.time() - self._anim_start) % self._period
+            # Cosine easing: smooth deceleration at each end, no abrupt reversal
+            pos = (1.0 - math.cos(math.pi * 2.0 * t / self._period)) / 2.0 * max_x
+            self._set_capsule(
+                self._bar_items, pos, 2, pos + self._bar_width, self._height - 2, self._bar_color,
+            )
         self._after_id = self._canvas.after(self._interval, self._tick)
 
 
@@ -377,10 +370,10 @@ class WorkflowWindow:
         self._det_progress_bar: ttk.Progressbar | None = None
         self._text_font = ("Helvetica Neue", 13)
         self._button_font = ("Helvetica Neue", 12, "bold")
-        self._button_secondary_bg = "white"
-        self._button_secondary_fg = "#162033"
-        self._button_border = "#d4dce8"
-        self._button_accent_bg = "#2e72ff"
+        self._button_secondary_bg = "#f0f3f8"
+        self._button_secondary_fg = "#1a2030"
+        self._button_border = "#b8c4d6"
+        self._button_accent_bg = "#1a2030"
         self._button_accent_fg = "white"
 
     # ── Public lifecycle ──────────────────────────────────────────────────────
@@ -483,14 +476,15 @@ class WorkflowWindow:
                 command=command,
                 bg=self._button_accent_bg,
                 fg=self._button_accent_fg,
-                activebackground="#245fe0",
+                activebackground="#2d3548",
                 activeforeground="white",
                 relief="flat",
                 bd=0,
-                padx=14,
-                pady=8,
+                padx=16,
+                pady=9,
                 font=self._button_font,
                 highlightthickness=0,
+                cursor="hand2",
             )
         return tk.Button(
             parent,
@@ -498,15 +492,16 @@ class WorkflowWindow:
             command=command,
             bg=self._button_secondary_bg,
             fg=self._button_secondary_fg,
-            activebackground="#dde6f4",
+            activebackground="#dde4ef",
             activeforeground=self._button_secondary_fg,
             relief="flat",
             bd=0,
-            padx=14,
-            pady=8,
+            padx=16,
+            pady=9,
             font=self._button_font,
             highlightthickness=1,
             highlightbackground=self._button_border,
+            cursor="hand2",
         )
 
     def _text_widget(self, parent: tk.Misc, *, width: int, height: int) -> ScrolledText:
@@ -676,34 +671,38 @@ class WorkflowWindow:
         self._subtitle.set("Select a file to continue.")
         self._status.set("Waiting for file selection")
         self._step_state = "chooser"
-        self._detail_text_var.set(
-            "Click Choose File to open the native picker. The window stays here and continues "
-            "through processing."
-        )
+        self._detail_text_var.set("Select the file you want to process.")
         if self._button_bar is not None:
             self._button(self._button_bar, text="Choose File", command=self._choose_file, primary=True).pack(side="left")
             self._button(self._button_bar, text="Cancel", command=self._close, primary=False).pack(side="left", padx=(8, 0))
 
     def _render_processing(self, body: ttk.Frame) -> None:
-        self._title.set("Processing")
-        self._subtitle.set("We keep the workflow in one window from start to finish.")
-        if self._step_state == "summarizing":
-            self._status.set("Summarize transcript")
-        elif self._step_state == "diarizing":
+        if self._step_state == "diarizing":
+            self._title.set("Diarizing")
+            self._subtitle.set("Identifying and labeling individual speakers.")
             self._status.set("Diarize the audio")
-        elif self._mode == "record":
-            self._status.set("Transcribe recording")
-        elif self._mode == "audio":
-            self._status.set("Transcribe audio")
-        else:
+            self._detail_text_var.set("Matching each transcript segment to the speakers detected in the audio.")
+        elif self._step_state == "summarizing":
+            self._title.set("Summarizing")
+            self._subtitle.set("Generating a summary from the transcript.")
             self._status.set("Summarize transcript")
-        self._detail_text_var.set("This window remains open while the app finishes the current step and moves to the next one.")
+            self._detail_text_var.set("Your AI model is reading through the full transcript and writing a concise summary.")
+        elif self._mode == "record":
+            self._title.set("Transcribing")
+            self._subtitle.set("Converting your recording to text.")
+            self._status.set("Transcribe recording")
+            self._detail_text_var.set("Whisper is processing the audio — this may take a minute for longer recordings.")
+        else:
+            self._title.set("Transcribing")
+            self._subtitle.set("Converting audio to text.")
+            self._status.set("Transcribe audio")
+            self._detail_text_var.set("Whisper is processing the audio — this may take a minute for longer files.")
 
     def _render_prompt(self, body: ttk.Frame) -> None:
         self._stop_progress()
         self._title.set("Review prompt")
         self._subtitle.set("You can edit the summarization prompt without leaving the workflow.")
-        self._status.set("Prompt override requested")
+        self._status.set("Edit the prompt below")
         self._detail_text_var.set("Keep {transcript} in the prompt. It will be replaced before summarization starts.")
         prompt_box = ttk.Frame(body, style="Card.TFrame")
         prompt_box.pack(fill="both", expand=True, pady=(6, 0))
