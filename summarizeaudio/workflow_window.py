@@ -30,6 +30,7 @@ class _MarqueeProgress:
         track_color: str = "#e7ebf2",
         bar_color: str = "#222222",
         mode: str = "marquee",
+        bar_ratio: float = 0.294,
     ) -> None:
         self._frame = ttk.Frame(parent, style="Card.TFrame")
         self._canvas = tk.Canvas(
@@ -45,7 +46,8 @@ class _MarqueeProgress:
         self._bar_color = bar_color
         self._height = height
         self._base_width = width
-        self._bar_width = max(60, int(width * 0.294))
+        self._bar_ratio = bar_ratio
+        self._bar_width = max(30, int(width * bar_ratio))
         self._radius = max(4, height // 2)
         self._bar_x = 0
         self._direction = 1
@@ -104,7 +106,7 @@ class _MarqueeProgress:
         if width == self._base_width and self._track_items:
             return
         self._base_width = width
-        self._bar_width = max(60, int(width * 0.294))
+        self._bar_width = max(30, int(width * self._bar_ratio))
         max_x = max(0, width - self._bar_width)
         self._bar_x = min(max(self._bar_x, 0), max_x)
         self._draw()
@@ -295,11 +297,11 @@ class _StepIndicator:
 
             if i < current and i in self._step_elapsed:
                 self._canvas.create_text(
-                    cx_c, cy + 13,
+                    lx, cy + 13,
                     text=self._step_elapsed[i],
                     fill="#8898b0",
                     font=fe,
-                    anchor="center",
+                    anchor="w",
                 )
 
             x += step_widths[i]
@@ -630,6 +632,7 @@ class WorkflowWindow:
                     body,
                     width=progress_width,
                     height=32,
+                    bar_ratio=0.147,
                 )
                 self._progress.pack(fill="x", pady=(0, 4))
                 self._progress.start()
