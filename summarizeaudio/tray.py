@@ -348,8 +348,7 @@ class TrayApp:
         def _handle_signal(sig, frame) -> None:
             LOCK_FILE.unlink(missing_ok=True)
             self._stop_event.set()
-            if self._tray is not None:
-                self._tray.stop()
+            self._remove_tray_icon()
             try:
                 self._window_manager.root.after(0, self._window_manager.root.quit)
             except Exception:
@@ -386,7 +385,7 @@ def _check_single_instance() -> None:
     if LOCK_FILE.exists():
         try:
             pid = int(LOCK_FILE.read_text().strip())
-            if _pid_alive(pid):
+            if _pid_alive(pid) and _pid_is_summarizeaudio(pid):
                 notify("SummarizeAudio is already running.")
                 sys.exit(0)
         except (ValueError, OSError):
@@ -402,6 +401,19 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _pid_is_summarizeaudio(pid: int) -> bool:
+    """Verify the locked PID is actually our process, not a reused PID."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+        cmd = result.stdout.lower()
+        return "summarizeaudio" in cmd or "summarize" in cmd
+    except Exception:
+        return True  # can't verify — assume it's ours to be safe
 
 
 def run() -> None:
