@@ -43,30 +43,77 @@ def _toml_basic_string(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _select_model_for_ram() -> str:
-    """Return the recommended Ollama model based on available system RAM."""
+def _get_total_ram_gb() -> float:
+    """Return total system RAM in GB, or 0.0 if undetectable."""
     try:
         if sys.platform == "darwin":
             result = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
-            ram_bytes = int(result.stdout.strip())
+            return int(result.stdout.strip()) / (1024 ** 3)
         elif sys.platform == "win32":
             result = subprocess.run(
                 ["powershell", "-Command",
                  "(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum).Sum"],
                 capture_output=True, text=True,
             )
-            ram_bytes = int(result.stdout.strip())
+            return int(result.stdout.strip()) / (1024 ** 3)
         else:
             with open("/proc/meminfo") as f:
                 for line in f:
                     if line.startswith("MemTotal:"):
-                        ram_bytes = int(line.split()[1]) * 1024
-                        break
-                else:
-                    return "gemma3:4b"
+                        return int(line.split()[1]) * 1024 / (1024 ** 3)
     except Exception:
+        pass
+    return 0.0
+
+
+# Approximate in-memory footprint for each component (GB).
+_WHISPER_RAM_GB: dict[str, float] = {
+    "tiny": 0.5, "base": 0.5, "small": 1.0, "medium": 2.0, "large": 3.5,
+}
+_OLLAMA_RAM_GB: dict[str, float] = {
+    "gemma3:4b": 4.0, "gemma3:12b": 9.0,
+}
+_DIARIZER_RAM_GB = 1.5
+_OS_OVERHEAD_GB  = 2.0
+
+
+def memory_warning(cfg: "AppConfig", needs_transcription: bool = True) -> str | None:
+    """Return a human-readable warning string if RAM looks insufficient, else None.
+
+    needs_transcription=False skips Whisper + diarizer budgets (text-only mode).
+    """
+    total_gb = _get_total_ram_gb()
+    if total_gb <= 0:
+        return None  # can't determine — stay silent
+
+    ollama_gb  = _OLLAMA_RAM_GB.get(cfg.ollama.model, 4.0)
+    whisper_gb = _WHISPER_RAM_GB.get(cfg.whisper.model, 1.0) if needs_transcription else 0.0
+    import os as _os
+    diarizer_gb = _DIARIZER_RAM_GB if (needs_transcription and _os.environ.get("HUGGINGFACE_ACCESS_TOKEN")) else 0.0
+    needed_gb  = ollama_gb + whisper_gb + diarizer_gb + _OS_OVERHEAD_GB
+
+    if total_gb >= needed_gb:
+        return None
+
+    parts = [f"{cfg.ollama.model} (~{ollama_gb:.0f} GB)"]
+    if whisper_gb:
+        parts.append(f"Whisper {cfg.whisper.model} (~{whisper_gb:.1f} GB)")
+    if diarizer_gb:
+        parts.append(f"diarizer (~{diarizer_gb:.1f} GB)")
+    components = ", ".join(parts)
+    return (
+        f"Low memory: your system has {total_gb:.0f} GB RAM but "
+        f"{components} needs ~{needed_gb:.0f} GB total. "
+        "Processing may be slow or fail."
+    )
+
+
+def _select_model_for_ram() -> str:
+    """Return the recommended Ollama model based on available system RAM."""
+    ram_gb = _get_total_ram_gb()
+    if ram_gb <= 0:
         return "gemma3:4b"
-    return "gemma3:12b" if ram_bytes > 8 * 1024 ** 3 else "gemma3:4b"
+    return "gemma3:12b" if ram_gb > 8 else "gemma3:4b"
 
 
 def _make_default_toml(model: str) -> str:

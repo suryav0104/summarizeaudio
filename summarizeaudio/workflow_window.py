@@ -1072,10 +1072,13 @@ class WorkflowWindow:
                 self._start_step_timer("summarizing")
                 self._render()
                 self._raise_window()
+        elif kind == "warning_toast":
+            _, message = item
+            self._show_toast(message, duration_ms=8000, color="#d97706")
         elif kind == "set_icon":
             return
 
-    def _show_toast(self, message: str) -> None:
+    def _show_toast(self, message: str, duration_ms: int = 3000, color: str = "#f59e0b") -> None:
         """Show a brief non-blocking banner at the top of the window."""
         if hasattr(self, "_toast_after_id") and self._toast_after_id is not None:
             try:
@@ -1089,8 +1092,8 @@ class WorkflowWindow:
             except Exception:
                 pass
             self._toast_frame = None
-        toast = tk.Frame(self._win, bg="#f59e0b", padx=16, pady=10)
-        tk.Label(toast, text=message, bg="#f59e0b", fg="white",
+        toast = tk.Frame(self._win, bg=color, padx=16, pady=10)
+        tk.Label(toast, text=message, bg=color, fg="white",
                  font=("Helvetica Neue", 11), wraplength=520).pack()
         toast.place(x=0, y=0, relwidth=1.0)
         self._toast_frame = toast
@@ -1103,7 +1106,7 @@ class WorkflowWindow:
             self._toast_frame = None
             self._toast_after_id = None
 
-        self._toast_after_id = self._win.after(3000, _dismiss)
+        self._toast_after_id = self._win.after(duration_ms, _dismiss)
 
     # ── Elapsed time tracking ──────────────────────────────────────────────────
 

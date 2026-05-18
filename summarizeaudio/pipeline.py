@@ -15,7 +15,7 @@ from uuid import uuid4
 
 log = logging.getLogger(__name__)
 
-from summarizeaudio.config import AppConfig
+from summarizeaudio.config import AppConfig, memory_warning
 from summarizeaudio.error_handler import friendly_message, post_error
 from summarizeaudio.renamer import Renamer
 from summarizeaudio.summarizer import Summarizer, OllamaError
@@ -108,6 +108,13 @@ class Pipeline:
         """
         log.info("Pipeline starting: mode=%s session=%r", mode.value, session_name)
         self._error_posted = False
+        needs_transcription = mode != PipelineMode.LOCAL_TEXT
+        warn = memory_warning(self._cfg, needs_transcription=needs_transcription)
+        if warn:
+            try:
+                self._ui_queue.put_nowait(("warning_toast", warn))
+            except queue.Full:
+                pass
         try:
             self._run_inner(mode, session_name, mp3_path, source_path, resume_session_id=resume_session_id)
         except Exception as exc:
