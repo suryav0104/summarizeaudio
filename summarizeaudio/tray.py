@@ -200,32 +200,45 @@ class TrayApp:
         return f"✓ {label}" if self._cfg.ollama.model == model else label
 
     def _remove_tray_icon(self) -> None:
-        """Explicitly remove the NSStatusItem via AppKit before the process exits.
+        """Explicitly remove the NSStatusItem via AppKit.
 
-        pystray's visible=False and icon.stop() both silently fail on macOS
-        Tahoe when run_detached is used, because pystray's internal _running
-        flag is never set through the normal path.  Calling removeStatusItem_
-        directly is the only reliable way to ensure the icon disappears.
+        Must be called on the main thread.  pystray's visible=False and
+        icon.stop() both silently fail on macOS Tahoe with run_detached.
+        We try removeStatusItem_ first, then setVisible_(False) as a fallback,
+        checking both known attribute names across pystray versions.
         """
         if sys.platform != "darwin" or self._tray is None:
             return
         try:
             from AppKit import NSStatusBar  # type: ignore[import]
-            item = getattr(self._tray, "_status_item", None)
-            if item is not None:
-                NSStatusBar.systemStatusBar().removeStatusItem_(item)
-                self._tray._status_item = None  # type: ignore[attr-defined]
+            # Try attribute names used across pystray versions.
+            ns_item = None
+            for attr in ("_status_item", "_status_bar_item"):
+                ns_item = getattr(self._tray, attr, None)
+                if ns_item is not None:
+                    break
+            if ns_item is not None:
+                try:
+                    NSStatusBar.systemStatusBar().removeStatusItem_(ns_item)
+                except Exception:
+                    pass
+                try:
+                    ns_item.setVisible_(False)  # belt-and-suspenders
+                except Exception:
+                    pass
         except Exception:
             pass
 
     def _on_quit(self, icon, item) -> None:
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
-        # Defer stop + Tk quit to after this menu callback returns.  Calling
-        # icon.stop() synchronously inside a pystray callback can deadlock on
-        # macOS because pystray is integrated into Tk's NSApplication loop.
+        # Remove the icon synchronously right here — menu callbacks are always
+        # delivered on the main thread, which is what AppKit requires.
+        # Deferring this (root.after) creates a race with os._exit.
+        self._remove_tray_icon()
+        # Defer stop + Tk quit to after this callback returns so we don't
+        # deadlock pystray's NSApplication integration.
         def _do_quit() -> None:
-            self._remove_tray_icon()
             try:
                 icon.stop()
             except Exception:
