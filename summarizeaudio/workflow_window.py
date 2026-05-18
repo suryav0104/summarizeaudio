@@ -468,41 +468,64 @@ class WorkflowWindow:
         self._body = self._content
         return self._content
 
-    def _button(self, parent: tk.Misc, *, text: str, command, primary: bool = True) -> tk.Button:
+    def _button(self, parent: tk.Misc, *, text: str, command, primary: bool = True) -> tk.Frame:
+        """Return a Label-based button that reliably respects colors on macOS.
+
+        tk.Button on macOS Aqua ignores bg/fg even with relief='flat'.
+        A Frame+Label combo always renders with the explicit colors.
+        """
         if primary:
-            return tk.Button(
-                parent,
-                text=text,
-                command=command,
-                bg=self._button_accent_bg,
-                fg=self._button_accent_fg,
-                activebackground="#2d3548",
-                activeforeground="white",
-                relief="flat",
-                bd=0,
-                padx=16,
-                pady=9,
-                font=self._button_font,
-                highlightthickness=0,
-                cursor="hand2",
-            )
-        return tk.Button(
-            parent,
+            btn_bg   = self._button_accent_bg
+            btn_fg   = self._button_accent_fg
+            hover_bg = "#2d3548"
+            outer = tk.Frame(parent, bg=btn_bg, cursor="hand2")
+            container = outer
+        else:
+            btn_bg   = self._button_secondary_bg
+            btn_fg   = self._button_secondary_fg
+            hover_bg = "#dde4ef"
+            # 1-px border via a slightly darker outer frame.
+            outer = tk.Frame(parent, bg=self._button_border, cursor="hand2")
+            container = tk.Frame(outer, bg=btn_bg, cursor="hand2")
+            container.pack(padx=1, pady=1)
+
+        label = tk.Label(
+            container,
             text=text,
-            command=command,
-            bg=self._button_secondary_bg,
-            fg=self._button_secondary_fg,
-            activebackground="#dde4ef",
-            activeforeground=self._button_secondary_fg,
-            relief="flat",
-            bd=0,
-            padx=16,
-            pady=9,
+            bg=btn_bg,
+            fg=btn_fg,
             font=self._button_font,
-            highlightthickness=1,
-            highlightbackground=self._button_border,
+            padx=16,
+            pady=8,
             cursor="hand2",
         )
+        label.pack()
+
+        def _enter(_e: tk.Event) -> None:
+            container.configure(bg=hover_bg)
+            label.configure(bg=hover_bg)
+
+        def _leave(_e: tk.Event) -> None:
+            # Only reset if the pointer has truly left the outer frame.
+            try:
+                px, py = outer.winfo_pointerxy()
+                ox, oy = outer.winfo_rootx(), outer.winfo_rooty()
+                if ox <= px <= ox + outer.winfo_width() and oy <= py <= oy + outer.winfo_height():
+                    return
+            except Exception:
+                pass
+            container.configure(bg=btn_bg)
+            label.configure(bg=btn_bg)
+
+        def _click(_e: tk.Event) -> None:
+            command()
+
+        for widget in (outer, container, label):
+            widget.bind("<Enter>", _enter)
+            widget.bind("<Leave>", _leave)
+            widget.bind("<Button-1>", _click)
+
+        return outer
 
     def _text_widget(self, parent: tk.Misc, *, width: int, height: int) -> ScrolledText:
         text = ScrolledText(
