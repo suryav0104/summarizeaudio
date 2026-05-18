@@ -376,8 +376,20 @@ class TrayApp:
         # doesn't try to set visibility from a background thread (NSView updates
         # must happen on the main thread on macOS).
         self._tray.run_detached(setup=lambda icon: None)
-        # Show the icon here, on the main thread, before entering mainloop.
-        self._tray.visible = True
+        # Schedule icon visibility for after the Tk mainloop starts.
+        # Calling visible=True before mainloop can silently fail on macOS
+        # Tahoe if NSStatusBar hasn't fully initialized yet.
+        self._window_manager.root.after(
+            300, lambda: self._show_icon_when_ready()
+        )
+
+    def _show_icon_when_ready(self) -> None:
+        try:
+            self._tray.visible = True
+            # Rebuild the menu now that _status_item exists.
+            self._rebuild_menu()
+        except Exception:
+            pass
 
 
 def _check_single_instance() -> None:
@@ -413,7 +425,7 @@ def _pid_is_summarizeaudio(pid: int) -> bool:
         cmd = result.stdout.lower()
         return "summarizeaudio" in cmd or "summarize" in cmd
     except Exception:
-        return True  # can't verify — assume it's ours to be safe
+        return False  # can't verify — don't block startup
 
 
 def run() -> None:
@@ -434,10 +446,11 @@ def run() -> None:
         notify(msg, "SummarizeAudio Error")
         raise SystemExit(1)
     finally:
-        # Remove the NSStatusItem before os._exit so macOS actually clears it.
+        # Delete lock file first so a restarted instance isn't blocked.
+        LOCK_FILE.unlink(missing_ok=True)
+        # Then remove the menu bar icon before force-killing.
         if app is not None:
             app._remove_tray_icon()
-        LOCK_FILE.unlink(missing_ok=True)
         # Force-terminate so daemon threads (Whisper, pyannote, Ollama) can't
         # keep a ghost process — and therefore a ghost menu bar icon — alive.
         os._exit(0)
