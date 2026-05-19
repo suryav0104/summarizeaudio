@@ -370,26 +370,52 @@ class TrayApp:
         Tk drives the shared NSApplication event loop, so pystray status bar
         events are delivered through it automatically.
         """
-        self._create_icon()
         self._setup_signals()
-        # run_detached with a no-op setup so pystray marks itself ready but
-        # doesn't try to set visibility from a background thread (NSView updates
-        # must happen on the main thread on macOS).
-        self._tray.run_detached(setup=lambda icon: None)
-        # Schedule icon visibility for after the Tk mainloop starts.
-        # Calling visible=True before mainloop can silently fail on macOS
-        # Tahoe if NSStatusBar hasn't fully initialized yet.
-        self._window_manager.root.after(
-            300, lambda: self._show_icon_when_ready()
-        )
+        # Defer ALL NSStatusBar/pystray init to after the Tk mainloop starts.
+        # On macOS Tahoe, creating NSStatusItem before NSApp's run loop is
+        # active results in the item being constructed but never rendered in
+        # the menu bar (button is non-hidden, image is set, but invisible).
+        log.info("run_detached: deferring icon creation until mainloop starts")
+        self._window_manager.root.after(100, self._init_icon_in_mainloop)
 
-    def _show_icon_when_ready(self) -> None:
+    def _init_icon_in_mainloop(self) -> None:
+        """Creates and shows the tray icon now that NSApp's run loop is active."""
+        log.info("_init_icon_in_mainloop: creating icon inside running mainloop")
+        try:
+            self._create_icon()
+            log.info("_init_icon_in_mainloop: calling pystray run_detached")
+            self._tray.run_detached(setup=lambda icon: None)
+            log.info("_init_icon_in_mainloop: scheduling visibility")
+            self._window_manager.root.after(200, self._show_icon_when_ready)
+        except Exception:
+            log.exception("_init_icon_in_mainloop: failed")
+
+    def _show_icon_when_ready(self, attempt: int = 0) -> None:
+        log.info("_show_icon_when_ready: attempt %d", attempt)
         try:
             self._tray.visible = True
-            # Rebuild the menu now that _status_item exists.
-            self._rebuild_menu()
         except Exception:
-            pass
+            log.exception("_show_icon_when_ready: visible=True failed (attempt %d)", attempt)
+
+        # Diagnostic: check actual AppKit button state after pystray's call.
+        try:
+            btn = self._tray._status_item.button()  # type: ignore[attr-defined]
+            log.info(
+                "button hidden=%s image=%s pystray_visible=%s",
+                btn.isHidden(), btn.image(), self._tray._visible,  # type: ignore[attr-defined]
+            )
+        except Exception:
+            log.exception("diagnostic failed")
+
+        # macOS Tahoe: setHidden_(False) on the button alone may not be enough.
+        # Also call setVisible_(True) on the NSStatusItem itself.
+        try:
+            self._tray._status_item.setVisible_(True)  # type: ignore[attr-defined]
+            log.info("_show_icon_when_ready: setVisible_(True) called on status item")
+        except Exception:
+            log.exception("_show_icon_when_ready: setVisible_(True) failed")
+
+        self._rebuild_menu()
 
 
 def _check_single_instance() -> None:
