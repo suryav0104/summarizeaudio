@@ -74,6 +74,9 @@ def friendly_message(component: str, message: str, traceback_str: str = "") -> s
             "input device selection, and system audio setup, then try again."
         )
 
+    if "configured recording device" in text and "not found" in text:
+        return message
+
     if "config" in text and (
         "toml" in text
         or "decode" in text
@@ -146,4 +149,4 @@ def post_error(
 def format_error(component: str, message: str, traceback_str: str) -> str:
     """Format a human-readable error string for display."""
     friendly = friendly_message(component, message, traceback_str)
-    return f"Component: {component}\n\n{friendly}\n\nSee {LOG_PATH} for technical details."
+    return f"Component: {component}\n\n{friendly}\n\nTechnical details were saved to {LOG_PATH}."

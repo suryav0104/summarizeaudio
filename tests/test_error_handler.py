@@ -18,7 +18,7 @@ def test_format_error_hides_traceback_and_uses_log_hint():
     )
     assert "traceback line 1" not in rendered
     assert "traceback line 2" not in rendered
-    assert "See" in rendered
+    assert "Technical details were saved" in rendered
 
 
 def test_format_error_preserves_already_friendly_cloud_sync_message():
@@ -41,3 +41,14 @@ def test_format_error_preserves_no_usable_audio_message():
     )
     assert "captured no usable audio" in rendered
     assert "Something went wrong" not in rendered
+
+
+def test_format_error_preserves_configured_recording_device_message():
+    rendered = format_error(
+        "tray.py → recorder",
+        "Configured recording device 'Multi-input device' was not found.",
+        "traceback line",
+    )
+    assert "Configured recording device 'Multi-input device' was not found." in rendered
+    assert "Something went wrong" not in rendered
+    assert "traceback line" not in rendered

@@ -10,9 +10,26 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _message_parts(message: str) -> tuple[str, str]:
+    paragraphs = [part.strip() for part in message.split("\n\n") if part.strip()]
+    if not paragraphs:
+        return "", ""
+
+    component = None
+    if paragraphs[0].lower().startswith("component:"):
+        component = paragraphs.pop(0)
+
+    primary = paragraphs.pop(0) if paragraphs else message.strip()
+    technical = list(paragraphs)
+    if component:
+        technical.insert(0, component)
+    return primary, "\n\n".join(technical)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     message = sys.stdin.read().strip()
+    primary_message, supporting_message = _message_parts(message)
 
     import tkinter as tk
     import tkinter.ttk as ttk
@@ -35,9 +52,9 @@ def main(argv: list[str] | None = None) -> int:
         pass
     style.configure("Alert.TFrame", background="#f5f7fb")
     style.configure("AlertCard.TFrame", background="white")
-    style.configure("AlertTitle.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 22, "bold"))
-    style.configure("AlertSub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 12))
-    style.configure("AlertBody.TLabel", background="white", foreground="#162033", font=("Helvetica Neue", 14))
+    style.configure("AlertTitle.TLabel", background="#f5f7fb", foreground="#162033", font=("Helvetica Neue", 20, "bold"))
+    style.configure("AlertSub.TLabel", background="#f5f7fb", foreground="#52607a", font=("Helvetica Neue", 11))
+    style.configure("AlertDetail.TLabel", background="white", foreground="#60708a", font=("Helvetica Neue", 11))
 
     frame.configure(style="Alert.TFrame")
     card = ttk.Frame(frame, style="AlertCard.TFrame", padding=24)
@@ -46,20 +63,37 @@ def main(argv: list[str] | None = None) -> int:
     ttk.Label(card, text=args.title, style="AlertTitle.TLabel").pack(anchor="w")
     ttk.Label(
         card,
-        text="Review this message and close it when you're done.",
+        text="Resolve this issue before continuing.",
         style="AlertSub.TLabel",
         wraplength=700,
     ).pack(anchor="w", pady=(4, 10))
 
     body = ttk.Frame(card, style="AlertCard.TFrame")
     body.pack(fill="both", expand=True, pady=(4, 10))
-    ttk.Label(
-        body,
-        text=message or "",
-        style="AlertBody.TLabel",
-        wraplength=680,
+
+    primary = tk.Frame(body, bg="#fff5f5", highlightbackground="#f1b7b7", highlightthickness=1, padx=14, pady=12)
+    primary.pack(fill="x", anchor="w")
+    tk.Label(
+        primary,
+        text=primary_message or "",
+        bg="#fff5f5",
+        fg="#7f1d1d",
+        font=("Helvetica Neue", 11),
+        wraplength=640,
         justify="left",
-    ).pack(anchor="w")
+        anchor="w",
+    ).pack(anchor="w", fill="x")
+
+    if supporting_message:
+        for index, paragraph in enumerate(supporting_message.split("\n\n")):
+            ttk.Label(
+                body,
+                text=paragraph,
+                style="AlertDetail.TLabel",
+                wraplength=680,
+                justify="left",
+                anchor="w",
+            ).pack(anchor="w", fill="x", pady=(12 if index == 0 else 8, 0))
 
     def close() -> None:
         try:
@@ -88,16 +122,16 @@ def main(argv: list[str] | None = None) -> int:
     ).pack(side="left")
 
     root.protocol("WM_DELETE_WINDOW", close)
-    root.deiconify()
     root.update_idletasks()
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
     x = max((screen_w - 760) // 2, 0)
     y = max((screen_h - 360) // 2, 0)
     root.geometry(f"760x360+{x}+{y}")
+    root.deiconify()
     root.lift()
     root.attributes("-topmost", True)
-    root.after(250, lambda: root.attributes("-topmost", False))
+    root.after(750, lambda: root.attributes("-topmost", False))
     root.focus_force()
     root.grab_set()
     root.mainloop()
