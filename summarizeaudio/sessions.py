@@ -515,8 +515,13 @@ def session_action_specs(session: SessionFiles) -> list[tuple[str, Path]]:
 def session_for_summary_path(root: Path, summary: Path) -> SessionFiles | None:
     summary_resolved = summary.resolve()
     for session in load_sessions(root, limit=None, include_archived=False):
-        if session.summary.resolve() == summary_resolved:
-            return session
+        if session.summary is None:
+            continue
+        try:
+            if session.summary.resolve() == summary_resolved:
+                return session
+        except OSError:
+            continue
 
     parts = _parse_artifact_stem(summary.stem)
     if parts is None or parts.kind != "summary":

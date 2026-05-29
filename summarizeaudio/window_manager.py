@@ -73,7 +73,11 @@ class WindowManager:
             else:
                 # User is engaged — bring to front and explain.
                 self._workflow_win._focus()
-                self._workflow_win._show_toast("Close this window before starting a new action.")
+                self._workflow_win._show_toast(
+                    "Close this window before starting a new action.",
+                    duration_ms=6000,
+                    color="#dc2626",
+                )
             return
 
         self._workflow_win = WorkflowWindow(
@@ -81,13 +85,34 @@ class WindowManager:
         )
         self._workflow_win.show()
 
+    def block_for_open_window(self) -> bool:
+        """Return True if a workflow/history window is open.
+
+        Safe to call from any thread (pystray menu callbacks fire off the Tk
+        main thread). Performs only Python-level reference checks — no Tk
+        calls. When a window is detected, posts a `show_blocked_toast`
+        message onto the UI queue so the actual focus + toast run on the
+        main thread.
+        """
+        if self._workflow_win is None and self._history_win is None:
+            return False
+        try:
+            self._ui_queue.put_nowait(("show_blocked_toast",))
+        except Exception:
+            pass
+        return True
+
     def show_history(self) -> None:
         from summarizeaudio.history_window import HistoryWindow
 
         # Workflow window open — one window at a time.
         if self._workflow_win is not None and _win_alive(self._workflow_win._win):
             self._workflow_win._focus()
-            self._workflow_win._show_toast("Close this window before starting a new action.")
+            self._workflow_win._show_toast(
+                "Close this window before starting a new action.",
+                duration_ms=6000,
+                color="#dc2626",
+            )
             return
 
         if self._history_win is not None and _win_alive(self._history_win._win):
@@ -110,7 +135,10 @@ class WindowManager:
     def _load_dock_icon(self) -> Any:
         try:
             import AppKit
-            path = Path(__file__).parent.parent / "assets" / "icon_idle.png"
+            assets = Path(__file__).parent.parent / "assets"
+            path = assets / "dock_icon.png"
+            if not path.exists():
+                path = assets / "icon_idle.png"
             if path.exists():
                 return AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
         except Exception:
@@ -144,6 +172,34 @@ class WindowManager:
         except Exception:
             pass
 
+    def _show_blocked_toast_main_thread(self) -> None:
+        """Focus the open window and surface the 'close before starting' toast.
+        Must run on the Tk main thread."""
+        if self._workflow_win is not None and _win_alive(self._workflow_win._win):
+            self._workflow_win._focus()
+            self._workflow_win._show_toast(
+                "Close this window before starting a new action.",
+                duration_ms=6000,
+                color="#dc2626",
+            )
+            return
+        if self._history_win is not None and _win_alive(self._history_win._win):
+            self._history_win._focus()
+            self._history_win._show_toast("Close this window before starting a new action.")
+
+    def _sweep_stale_window_refs(self) -> None:
+        """Clear `_workflow_win` / `_history_win` when the underlying Tk widget
+        has been destroyed. Must run on the main thread.
+
+        Required so the thread-safe `block_for_open_window` (which only does
+        None checks) doesn't return False positives after the user closes a
+        window via its X button.
+        """
+        if self._workflow_win is not None and not _win_alive(self._workflow_win._win):
+            self._workflow_win = None
+        if self._history_win is not None and not _win_alive(self._history_win._win):
+            self._history_win = None
+
     def _pump(self) -> None:
         try:
             while True:
@@ -151,6 +207,7 @@ class WindowManager:
                 self._handle(item)
         except queue.Empty:
             pass
+        self._sweep_stale_window_refs()
         self._update_activation_policy()
         if self._root.winfo_exists():
             self._root.after(100, self._pump)
@@ -169,6 +226,9 @@ class WindowManager:
 
         elif kind == "show_history":
             self.show_history()
+
+        elif kind == "show_blocked_toast":
+            self._show_blocked_toast_main_thread()
 
         elif kind == "set_icon":
             _, state = item

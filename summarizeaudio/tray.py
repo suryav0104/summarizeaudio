@@ -18,7 +18,7 @@ from PIL import Image
 from summarizeaudio.config import load_config, save_config
 from summarizeaudio.error_handler import format_error
 from summarizeaudio.notifier import notify
-from summarizeaudio.recorder import Recorder
+from summarizeaudio.recorder import Recorder, check_input_health
 
 if TYPE_CHECKING:
     from summarizeaudio.window_manager import WindowManager
@@ -41,6 +41,24 @@ def _patch_pystray_darwin(icon: "pystray.Icon") -> None:
     """
     import AppKit
     import objc
+
+    # ── patch image creation so idle can be an AppKit template image ─────────
+    # Template images are rendered by macOS in the correct menu-bar color
+    # (black on light menu bars, white on dark menu bars).  Keep this opt-in so
+    # colored recording/processing/error badges remain colored.
+    original_assert_image = icon._assert_image  # bound method
+
+    def _patched_assert_image() -> None:
+        original_assert_image()
+        image = getattr(icon, "_icon_image", None)
+        if image is not None:
+            try:
+                image.setTemplate_(bool(getattr(icon, "_summarizeaudio_template_icon", False)))
+                icon._status_item.button().setImage_(image)
+            except Exception:
+                pass
+
+    icon._assert_image = _patched_assert_image  # type: ignore[method-assign]
 
     # ── patch _update_menu ──────────────────────────────────────────────────
     original_create_menu = icon._create_menu  # bound method
@@ -115,6 +133,7 @@ class TrayApp:
         self._pipeline_running = threading.Event()
         self._stop_event = threading.Event()
         self._recorder: Recorder | None = None
+        self._input_health_queue: queue.Queue = queue.Queue()
         self._cfg = load_config(self._ui_queue)
 
         root = self._cfg.storage.output_folder
@@ -135,6 +154,8 @@ class TrayApp:
         self._window_manager = WindowManager(
             self._cfg, self._ui_queue, on_icon_state=self._on_icon_state
         )
+        self._startup_input_check_started = False
+        self._input_health_pump_started = False
 
     @property
     def window_manager(self) -> "WindowManager":
@@ -145,6 +166,22 @@ class TrayApp:
     def _on_start_recording(self, icon, item) -> None:
         if self._pipeline_running.is_set():
             return
+        if self._window_manager.block_for_open_window():
+            log.info("_on_start_recording: blocked because a window is open")
+            return
+        start_report = check_input_health(self._cfg.recording.input_device)
+        log.info(
+            "pre-start input health: issue=%s device=%r active_channels=%s sampled_channels=%d",
+            start_report.issue,
+            start_report.device_name,
+            start_report.active_channels,
+            start_report.sampled_channels,
+        )
+        if self._should_stop_recording_for_input_health(start_report.issue):
+            if start_report.warning:
+                notify(start_report.warning, "Recording Input Problem")
+            return
+
         recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
         try:
             recorder.start()
@@ -158,6 +195,96 @@ class TrayApp:
         self._recorder = recorder
         self._set_icon("recording")
         self._rebuild_menu()
+        self._run_recording_input_health_check(recorder)
+
+    def _should_alert_input_health(self, issue: str) -> bool:
+        return issue in {"device_missing", "no_device", "channel_mapping", "probe_error"}
+
+    def _should_stop_recording_for_input_health(self, issue: str) -> bool:
+        return issue in {"device_missing", "no_device", "channel_mapping", "probe_error", "no_frames"}
+
+    def _run_startup_input_health_check(self) -> None:
+        if self._startup_input_check_started:
+            return
+        self._startup_input_check_started = True
+        self._start_input_health_pump()
+
+        def _worker() -> None:
+            report = check_input_health(self._cfg.recording.input_device)
+            log.info(
+                "startup input health: issue=%s device=%r active_channels=%s sampled_channels=%d",
+                report.issue,
+                report.device_name,
+                report.active_channels,
+                report.sampled_channels,
+            )
+            self._input_health_queue.put(("startup", report, None))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _run_recording_input_health_check(self, recorder: Recorder) -> None:
+        self._start_input_health_pump()
+
+        def _worker() -> None:
+            report = check_input_health(self._cfg.recording.input_device)
+            log.info(
+                "recording input health: issue=%s device=%r active_channels=%s sampled_channels=%d",
+                report.issue,
+                report.device_name,
+                report.active_channels,
+                report.sampled_channels,
+            )
+            self._input_health_queue.put(("recording", report, recorder))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_input_health_pump(self) -> None:
+        if self._input_health_pump_started:
+            return
+        self._input_health_pump_started = True
+        try:
+            self._window_manager.root.after(100, self._pump_input_health_results)
+        except Exception:
+            self._input_health_pump_started = False
+
+    def _pump_input_health_results(self) -> None:
+        try:
+            while True:
+                kind, report, recorder = self._input_health_queue.get_nowait()
+                if kind == "startup":
+                    self._handle_startup_input_health(report)
+                elif kind == "recording":
+                    self._handle_recording_input_health(recorder, report)
+        except queue.Empty:
+            pass
+
+        if self._stop_event.is_set():
+            self._input_health_pump_started = False
+            return
+        try:
+            self._window_manager.root.after(100, self._pump_input_health_results)
+        except Exception:
+            self._input_health_pump_started = False
+
+    def _handle_recording_input_health(self, recorder: Recorder, report) -> None:
+        if self._recorder is not recorder:
+            return
+        if not self._should_stop_recording_for_input_health(report.issue):
+            return
+
+        recorder.cleanup(delete_wav=True)
+        self._recorder = None
+        self._set_icon("idle")
+        self._rebuild_menu()
+        if report.warning:
+            notify(report.warning, "Recording Input Problem")
+
+    def _handle_startup_input_health(self, report) -> None:
+        if self._recorder is not None and self._should_stop_recording_for_input_health(report.issue):
+            self._handle_recording_input_health(self._recorder, report)
+            return
+        if self._should_alert_input_health(report.issue) and report.warning:
+            notify(report.warning, "Recording Input Problem")
 
     def _on_stop_recording(self, icon, item) -> None:
         recorder = self._recorder
@@ -230,30 +357,49 @@ class TrayApp:
             pass
 
     def _on_quit(self, icon, item) -> None:
+        log.info("Quit requested")
         LOCK_FILE.unlink(missing_ok=True)
         self._stop_event.set()
-        # Remove the icon synchronously right here — menu callbacks are always
-        # delivered on the main thread, which is what AppKit requires.
-        # Deferring this (root.after) creates a race with os._exit.
-        self._remove_tray_icon()
-        # Defer stop + Tk quit to after this callback returns so we don't
-        # deadlock pystray's NSApplication integration.
+
+        # Arm the hard exit before touching pystray/AppKit. Those calls can
+        # block on macOS, but the terminal process must still exit promptly.
+        self._schedule_force_exit(0.8)
+
+        if self._recorder is not None:
+            try:
+                self._recorder.cleanup(delete_wav=False)
+            except Exception:
+                pass
+            self._recorder = None
+
         def _do_quit() -> None:
             try:
-                icon.stop()
+                self._window_manager.close_all()
             except Exception:
                 pass
             try:
                 self._window_manager.root.quit()
             except Exception:
                 pass
+            try:
+                self._window_manager.root.destroy()
+            except Exception:
+                pass
+            if sys.platform != "darwin":
+                try:
+                    icon.stop()
+                except Exception:
+                    pass
+
         try:
-            self._window_manager.root.after(50, _do_quit)
+            self._window_manager.root.after(0, _do_quit)
         except Exception:
             _do_quit()
-        # Hard-kill safety net: if the process is still alive after 3 s
-        # (e.g. a stuck daemon thread), force-exit unconditionally.
-        threading.Timer(3.0, lambda: os._exit(0)).start()
+
+    def _schedule_force_exit(self, delay: float = 0.8) -> None:
+        timer = threading.Timer(delay, lambda: os._exit(0))
+        timer.daemon = True
+        timer.start()
 
     # ── Icon state callback (invoked from WindowManager on main thread) ───────
 
@@ -274,6 +420,8 @@ class TrayApp:
 
     def _set_icon(self, state: str) -> None:
         if self._tray:
+            if sys.platform == "darwin":
+                setattr(self._tray, "_summarizeaudio_template_icon", state == "idle")
             self._tray.icon = self._icons.get(state, self._icons["idle"])
 
     def _rebuild_menu(self) -> None:
@@ -341,15 +489,25 @@ class TrayApp:
             **kwargs,
         )
         if sys.platform == "darwin":
+            setattr(self._tray, "_summarizeaudio_template_icon", True)
+        if sys.platform == "darwin":
             _patch_pystray_darwin(self._tray)
         self._rebuild_menu()
 
     def _setup_signals(self) -> None:
         def _handle_signal(sig, frame) -> None:
+            log.info("Signal %s received; quitting", sig)
             LOCK_FILE.unlink(missing_ok=True)
             self._stop_event.set()
-            self._remove_tray_icon()
+            self._schedule_force_exit(0.8)
+            if self._recorder is not None:
+                try:
+                    self._recorder.cleanup(delete_wav=False)
+                except Exception:
+                    pass
+                self._recorder = None
             try:
+                self._window_manager.root.after(0, self._window_manager.close_all)
                 self._window_manager.root.after(0, self._window_manager.root.quit)
             except Exception:
                 pass
@@ -361,6 +519,7 @@ class TrayApp:
         """Runs the pystray icon loop (Windows/Linux background thread path)."""
         self._create_icon()
         self._setup_signals()
+        self._run_startup_input_health_check()
         self._tray.run(setup=lambda icon: setattr(icon, "visible", True))
 
     def run_detached(self) -> None:
@@ -377,6 +536,7 @@ class TrayApp:
         # the menu bar (button is non-hidden, image is set, but invisible).
         log.info("run_detached: deferring icon creation until mainloop starts")
         self._window_manager.root.after(100, self._init_icon_in_mainloop)
+        self._window_manager.root.after(600, self._run_startup_input_health_check)
 
     def _init_icon_in_mainloop(self) -> None:
         """Creates and shows the tray icon now that NSApp's run loop is active."""
@@ -474,9 +634,6 @@ def run() -> None:
     finally:
         # Delete lock file first so a restarted instance isn't blocked.
         LOCK_FILE.unlink(missing_ok=True)
-        # Then remove the menu bar icon before force-killing.
-        if app is not None:
-            app._remove_tray_icon()
-        # Force-terminate so daemon threads (Whisper, pyannote, Ollama) can't
-        # keep a ghost process — and therefore a ghost menu bar icon — alive.
+        # Force-terminate so library threads (Whisper, pyannote telemetry,
+        # pystray/AppKit) can't keep the terminal process alive.
         os._exit(0)

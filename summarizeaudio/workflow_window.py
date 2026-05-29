@@ -594,8 +594,15 @@ class WorkflowWindow:
             self._win.deiconify()
             self._win.lift()
             self._win.attributes("-topmost", True)
-            self._win.after(250, lambda: self._win.attributes("-topmost", False))
             self._win.focus_force()
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                except Exception:
+                    pass
+            self._win.after(150, self._win.lift)
+            self._win.after(750, lambda: self._win.attributes("-topmost", False))
         except Exception:
             pass
 
@@ -631,11 +638,11 @@ class WorkflowWindow:
                 step_elapsed=self._step_elapsed_by_index(),
             ).pack(fill="x", pady=(10, 2))
         else:
+            ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
             header_left = ttk.Frame(header, style="SummarizeAudio.TFrame")
-            header_left.pack(side="left", fill="both", expand=True)
+            header_left.pack(side="left", fill="both", expand=True, padx=(0, 16))
             ttk.Label(header_left, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
             ttk.Label(header_left, textvariable=self._subtitle, style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
-            ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
         ttk.Frame(self._win, style="Sep.TFrame", height=1).pack(fill="x")
 
         body = self._clear_body()
@@ -795,12 +802,28 @@ class WorkflowWindow:
             "want to review the source files, or close this window when you're done."
         )
         session = self._summary_session()
-        preview_box = ttk.Frame(body, style="Card.TFrame")
-        preview_box.pack(fill="both", expand=True, pady=(6, 0))
-        preview = self._text_widget(preview_box, width=56, height=8)
-        preview.pack(fill="both", expand=True)
-        preview.insert("1.0", self._summary_preview)
-        preview.configure(state="disabled")
+        if self._summary_preview:
+            preview_box = ttk.Frame(body, style="Card.TFrame")
+            preview_box.pack(fill="both", expand=True, pady=(6, 0))
+            preview = self._text_widget(preview_box, width=56, height=8)
+            preview.pack(fill="both", expand=True)
+            preview.insert("1.0", self._summary_preview)
+            preview.configure(state="disabled")
+
+        summary_link_path = self._summary_path
+        if summary_link_path is None and session is not None and session.summary is not None:
+            summary_link_path = session.summary
+        if summary_link_path is not None:
+            link = ttk.Label(
+                body,
+                text=summary_link_path.name,
+                style="Detail.TLabel",
+                foreground="#2563eb",
+                font=("Helvetica Neue", 10, "underline"),
+                cursor="hand2",
+            )
+            link.pack(anchor="w", pady=(8, 0))
+            link.bind("<Button-1>", lambda _e, p=summary_link_path: self._open_path(p))
 
         if self._button_bar is not None:
             action_specs = self._summary_action_specs(session)
@@ -848,10 +871,10 @@ class WorkflowWindow:
         if session is None:
             return []
         specs: list[tuple[str, Path]] = []
-        if session.transcript is not None and session.transcript.exists():
-            specs.append(("Open Transcript", session.transcript))
         if session.audio is not None and session.audio.exists():
             specs.append(("Open Recording", session.audio))
+        if session.transcript is not None and session.transcript.exists():
+            specs.append(("Open Transcript", session.transcript))
         return specs
 
     def _step_badge_text(self) -> str:
@@ -1026,7 +1049,7 @@ class WorkflowWindow:
             self._state = "prompt"
             self._render()
         elif kind == "name_dialog":
-            _, name_event, default_name = item
+            _, name_event, default_name = item[:3]
             self._resolver = name_event
             self._resolver_kind = kind
             self._default_name = default_name

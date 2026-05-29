@@ -245,10 +245,17 @@ class FakeFrame:
         self.args = args
         self.kwargs = kwargs
         self.pack_calls = []
+        self.bind_calls = []
         FakeFrame.instances.append(self)
 
     def pack(self, *args, **kwargs):
         self.pack_calls.append(kwargs)
+
+    def bind(self, event, callback):
+        self.bind_calls.append((event, callback))
+
+    def configure(self, **kwargs):
+        self.kwargs.update(kwargs)
 
 
 class FakeLabel:
@@ -443,6 +450,8 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeLabel)
     monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Label", FakeLabel)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     FakeText.instances.clear()
     FakeButton.instances.clear()
@@ -460,17 +469,67 @@ def test_workflow_window_summary_layout_keeps_actions_visible(tmp_path, monkeypa
     transcript_path.write_text("transcript content", encoding="utf-8")
     audio_path = audio_dir / "Audio - Topic 05-08-26.mp3"
     audio_path.write_text("audio content", encoding="utf-8")
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.session_for_summary_path",
+        lambda root, path: session_store.SessionFiles(
+            label="Topic",
+            date="05-08-26",
+            folder=summary_path.parent,
+            summary=summary_path,
+            transcript=transcript_path,
+            audio=audio_path,
+            source_path=audio_path,
+            id="summary-layout",
+            created_at="2026-05-08T00:00:00+00:00",
+            completed_at="2026-05-08T00:01:00+00:00",
+            status="completed",
+            archived=False,
+            mode="text",
+            source_key="summary-layout",
+        ),
+    )
     window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
     window._summary_path = summary_path
     window._summary_preview = "summary content"
     window._render_steps = lambda body: None
     window._button_bar = FakeFrame()
+    window._button = lambda parent, text, command, primary=True: FakeButton(parent, text=text)
     window._render_summary(FakeFrame())
 
     assert FakeText.instances
     assert FakeText.instances[-1].kwargs["height"] == 8
-    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Open Transcript", "Open Recording", "Close"]
-    assert all(label.kwargs.get("text") != str(summary_path) for label in FakeLabel.instances)
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Open Recording", "Open Transcript", "Close"]
+
+
+def test_workflow_window_summary_layout_uses_path_when_session_lookup_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeLabel)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    FakeText.instances.clear()
+    FakeButton.instances.clear()
+    FakeLabel.instances.clear()
+
+    summary_path = tmp_path / "SummaryFiles" / "Summary - Topic.md"
+    summary_path.parent.mkdir(parents=True)
+    summary_path.write_text("summary content", encoding="utf-8")
+    monkeypatch.setattr("summarizeaudio.workflow_window.session_for_summary_path", lambda root, path: None)
+
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "text", source=Path("/tmp/notes.txt"))
+    window._summary_path = summary_path
+    window._summary_preview = "summary content"
+    window._button_bar = FakeFrame()
+    window._button = lambda parent, text, command, primary=True: FakeButton(parent, text=text)
+
+    window._render_summary(FakeFrame())
+
+    assert [btn.kwargs["text"] for btn in FakeButton.instances] == ["Close"]
+    assert FakeText.instances[-1].content == "summary content"
 
 
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
@@ -493,6 +552,35 @@ def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
     assert fake_root.destroyed is False
 
 
+def test_workflow_window_name_dialog_has_no_summary_preview(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeLabel)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ScrolledText", FakeText)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Label", FakeLabel)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Entry", FakeEntry)
+    FakeText.instances.clear()
+    FakeButton.instances.clear()
+
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
+    window._render_steps = lambda body: None
+    window._default_name = "Project Update"
+    window._summary_preview = "summary preview"
+    window._button_bar = FakeFrame()
+    body = FakeFrame()
+
+    window._render_name(body)
+
+    assert FakeText.instances == []
+    assert "Review the summary" not in window._detail_text_var.get()
+
+
 def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
@@ -501,6 +589,8 @@ def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypa
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Label", FakeFrame)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Button", FakeButton)
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Entry", FakeEntry)
     FakeButton.instances.clear()
@@ -508,6 +598,7 @@ def test_workflow_window_name_dialog_buttons_are_left_aligned(tmp_path, monkeypa
     window._render_steps = lambda body: None
     window._default_name = "Project Update"
     window._button_bar = FakeFrame()
+    window._button = lambda parent, text, command, primary=True: FakeButton(parent, text=text, command=command)
     body = FakeFrame()
 
     window._render_name(body)
@@ -778,7 +869,7 @@ def test_workflow_window_summary_action_specs_include_available_files(tmp_path, 
     window._summary_path = summary_path
     session = window._summary_session()
     assert session is not None
-    assert window._summary_action_specs(session) == [("Open Transcript", transcript_path), ("Open Recording", audio_path)]
+    assert window._summary_action_specs(session) == [("Open Recording", audio_path), ("Open Transcript", transcript_path)]
 
 
 def test_workflow_window_has_compact_geometry(tmp_path, monkeypatch):

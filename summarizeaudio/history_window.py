@@ -121,8 +121,8 @@ class HistoryWindow:
             except Exception:
                 pass
             self._toast_frame = None
-        toast = tk.Frame(self._win, bg="#f59e0b", padx=16, pady=10)
-        tk.Label(toast, text=message, bg="#f59e0b", fg="white",
+        toast = tk.Frame(self._win, bg="#dc2626", padx=16, pady=10)
+        tk.Label(toast, text=message, bg="#dc2626", fg="white",
                  font=("Helvetica Neue", 11), wraplength=700).pack()
         toast.place(x=0, y=0, relwidth=1.0)
         self._toast_frame = toast
@@ -135,13 +135,20 @@ class HistoryWindow:
             self._toast_frame = None
             self._toast_after_id = None
 
-        self._toast_after_id = self._win.after(3000, _dismiss)
+        self._toast_after_id = self._win.after(6000, _dismiss)
 
     def _focus(self) -> None:
         self._win.lift()
         self._win.attributes("-topmost", True)
-        self._win.after(250, lambda: self._win.attributes("-topmost", False))
         self._win.focus_force()
+        if sys.platform == "darwin":
+            try:
+                import AppKit
+                AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
+        self._win.after(150, self._win.lift)
+        self._win.after(750, lambda: self._win.attributes("-topmost", False))
 
     def _reload_sessions(self, selected_id: str | None = None) -> None:
         self._sessions = load_sessions(

@@ -12,6 +12,7 @@ from summarizeaudio.config import (
     SummarizationConfig,
     WhisperConfig,
 )
+from summarizeaudio.recorder import InputHealthReport
 from summarizeaudio.tray import TrayApp
 
 
@@ -28,7 +29,32 @@ def make_config(tmp_path: Path, model: str) -> AppConfig:
 
 def _fake_wm():
     return SimpleNamespace(
-        root=SimpleNamespace(after=lambda *a: None, quit=lambda: None)
+        root=SimpleNamespace(after=lambda *a: None, quit=lambda: None),
+        block_for_open_window=lambda: False,
+    )
+
+
+def _fake_wm_immediate():
+    return SimpleNamespace(
+        root=SimpleNamespace(after=lambda _delay, func: func(), quit=lambda: None),
+        block_for_open_window=lambda: False,
+    )
+
+
+def _drain_input_health_once(app: TrayApp) -> None:
+    app._stop_event.set()
+    app._pump_input_health_results()
+
+
+def _ok_health_report() -> InputHealthReport:
+    return InputHealthReport(
+        ok=True,
+        issue="ok",
+        warning=None,
+        device_name="Multi-input device",
+        requested_device="Multi-input device",
+        sampled_channels=4,
+        active_channels=(1,),
     )
 
 
@@ -156,6 +182,7 @@ def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
 def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.tray.check_input_health", lambda _device: _ok_health_report())
 
     class FakeRecorder:
         def __init__(self, *args, **kwargs):
@@ -189,3 +216,308 @@ def test_on_icon_state_manages_pipeline_running_flag(tmp_path, monkeypatch):
 
     app._on_icon_state("idle")
     assert not app._pipeline_running.is_set()
+
+
+def test_quit_arms_force_exit_and_quits_root(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.tray.LOCK_FILE", tmp_path / "app.lock")
+
+    calls = []
+
+    class FakeRoot:
+        def after(self, delay, func=None):
+            calls.append(("after", delay))
+            if func is not None:
+                func()
+
+        def quit(self):
+            calls.append(("quit",))
+
+        def destroy(self):
+            calls.append(("destroy",))
+
+    fake_wm = SimpleNamespace(root=FakeRoot(), close_all=lambda: calls.append(("close_all",)))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: fake_wm)
+
+    app = TrayApp()
+    monkeypatch.setattr(app, "_schedule_force_exit", lambda delay=0.8: calls.append(("force_exit", delay)))
+
+    icon = SimpleNamespace(stop=lambda: calls.append(("icon_stop",)))
+    app._on_quit(icon, None)
+
+    assert ("force_exit", 0.8) in calls
+    assert ("close_all",) in calls
+    assert ("quit",) in calls
+    assert ("destroy",) in calls
+    assert ("icon_stop",) not in calls
+
+
+def test_quit_cleans_up_active_recorder(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.tray.LOCK_FILE", tmp_path / "app.lock")
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    app = TrayApp()
+    monkeypatch.setattr(app, "_schedule_force_exit", lambda delay=0.8: None)
+
+    class FakeRecorder:
+        def __init__(self):
+            self.cleaned = None
+
+        def cleanup(self, delete_wav=False):
+            self.cleaned = delete_wav
+
+    recorder = FakeRecorder()
+    app._recorder = recorder
+
+    app._on_quit(SimpleNamespace(stop=lambda: None), None)
+
+    assert recorder.cleaned is False
+    assert app._recorder is None
+
+
+def test_startup_input_health_alerts_for_channel_mapping_issue(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr(
+        "summarizeaudio.tray.check_input_health",
+        lambda _device: InputHealthReport(
+            ok=False,
+            issue="channel_mapping",
+            warning="channel mapping problem",
+            device_name="Multi-input device",
+            requested_device="Multi-input device",
+            sampled_channels=4,
+            active_channels=(3, 4),
+        ),
+    )
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", ImmediateThread)
+    app = TrayApp()
+
+    app._run_startup_input_health_check()
+    _drain_input_health_once(app)
+
+    assert notifications == [("Recording Input Problem", "channel mapping problem")]
+
+
+def test_startup_input_health_does_not_alert_for_no_signal(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr(
+        "summarizeaudio.tray.check_input_health",
+        lambda _device: InputHealthReport(
+            ok=False,
+            issue="no_signal",
+            warning="quiet room",
+            device_name="MacBook Air Microphone",
+            requested_device="MacBook Air Microphone",
+            sampled_channels=1,
+            active_channels=(),
+        ),
+    )
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", ImmediateThread)
+    app = TrayApp()
+
+    app._run_startup_input_health_check()
+    _drain_input_health_once(app)
+
+    assert notifications == []
+
+
+def test_start_recording_stops_and_alerts_for_channel_mapping_issue(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+
+    class FakeRecorder:
+        def __init__(self, *args, **kwargs):
+            self.started = False
+            self.cleaned = False
+
+        def start(self):
+            raise AssertionError("recorder should not start when pre-start health check fails")
+
+        def cleanup(self, delete_wav=False):
+            self.cleaned = delete_wav
+
+    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
+    monkeypatch.setattr(
+        "summarizeaudio.tray.check_input_health",
+        lambda _device: InputHealthReport(
+            ok=False,
+            issue="channel_mapping",
+            warning="channel mapping problem",
+            device_name="Multi-input device",
+            requested_device="Multi-input device",
+            sampled_channels=4,
+            active_channels=(3, 4),
+        ),
+    )
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", ImmediateThread)
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    monkeypatch.setattr(app, "_set_icon", lambda state: None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+
+    app._on_start_recording(None, None)
+
+    assert app._recorder is None
+    assert notifications == [("Recording Input Problem", "channel mapping problem")]
+
+
+def test_start_recording_keeps_running_for_no_signal(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+
+    class FakeRecorder:
+        def __init__(self, *args, **kwargs):
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def cleanup(self, delete_wav=False):
+            raise AssertionError("cleanup should not be called for no_signal")
+
+    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
+    monkeypatch.setattr(
+        "summarizeaudio.tray.check_input_health",
+        lambda _device: InputHealthReport(
+            ok=False,
+            issue="no_signal",
+            warning="quiet room",
+            device_name="MacBook Air Microphone",
+            requested_device="MacBook Air Microphone",
+            sampled_channels=1,
+            active_channels=(),
+        ),
+    )
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", ImmediateThread)
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    monkeypatch.setattr(app, "_set_icon", lambda state: None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+
+    app._on_start_recording(None, None)
+    _drain_input_health_once(app)
+
+    assert app._recorder is not None
+    assert notifications == []
+
+
+def test_start_recording_device_missing_uses_health_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+
+    warning = (
+        "Configured recording device 'Multi-input device' was not found. "
+        "Open Audio MIDI Setup or System Settings > Sound and choose a working input device."
+    )
+    monkeypatch.setattr(
+        "summarizeaudio.tray.check_input_health",
+        lambda _device: InputHealthReport(
+            ok=False,
+            issue="device_missing",
+            warning=warning,
+            device_name=None,
+            requested_device="Multi-input device",
+            sampled_channels=0,
+            active_channels=(),
+        ),
+    )
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class FakeRecorder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise AssertionError("recorder should not start when configured device is missing")
+
+    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
+    app = TrayApp()
+
+    app._on_start_recording(None, None)
+
+    assert notifications == [("Recording Input Problem", warning)]
+    assert app._recorder is None
+
+
+def test_startup_input_health_stops_active_recording_for_channel_mapping_issue(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    notifications = []
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
+
+    class FakeRecorder:
+        def __init__(self):
+            self.cleaned = False
+
+        def cleanup(self, delete_wav=False):
+            self.cleaned = delete_wav
+
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    monkeypatch.setattr(app, "_set_icon", lambda state: None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+    recorder = FakeRecorder()
+    app._recorder = recorder
+
+    app._handle_startup_input_health(
+        InputHealthReport(
+            ok=False,
+            issue="channel_mapping",
+            warning="channel mapping problem",
+            device_name="Multi-input device",
+            requested_device="Multi-input device",
+            sampled_channels=4,
+            active_channels=(3, 4),
+        )
+    )
+
+    assert recorder.cleaned is True
+    assert app._recorder is None
+    assert notifications == [("Recording Input Problem", "channel mapping problem")]
