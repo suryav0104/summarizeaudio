@@ -196,7 +196,7 @@ def test_list_installed_models_handles_missing_details():
 - [ ] **Step 2: Run, expect all PASS**
 
 Run: `./venv/bin/python -m pytest tests/test_ollama_client.py -v`
-Expected: 4 PASS (existing test) + 4 PASS (new). Total 5 PASS.
+Expected: 5 PASS total (1 existing from Task 1.1 + 4 new).
 
 - [ ] **Step 3: Commit**
 
@@ -514,6 +514,21 @@ if self._settings_win is not None and not _win_alive(self._settings_win._win):
     self._settings_win = None
 ```
 
+Extend `close_all` to include `_settings_win` so Quit closes it explicitly (root.destroy() would catch it anyway, but explicit close is consistent with workflow / history):
+
+```python
+def close_all(self) -> None:
+    for win in (self._workflow_win, self._history_win, self._settings_win):
+        if win is not None:
+            try:
+                win.close()
+            except Exception:
+                pass
+    self._workflow_win = None
+    self._history_win = None
+    self._settings_win = None
+```
+
 Extend `_update_activation_policy`'s `any_open` expression:
 
 ```python
@@ -538,10 +553,10 @@ def test_show_settings_creates_window_when_none(tmp_path, monkeypatch):
     fake_window_cls = MagicMock()
     instance = MagicMock(_win=MagicMock(winfo_exists=lambda: True))
     fake_window_cls.return_value = instance
-    monkeypatch.setattr(
-        "summarizeaudio.settings_window.SettingsWindow", fake_window_cls, raising=False
-    )
-    # Inject a fake module to satisfy the lazy import in show_settings.
+
+    # show_settings does `from summarizeaudio.settings_window import SettingsWindow`
+    # lazily inside its body. Inject a fake module *before* the call so the
+    # import resolves to our fake class.
     import sys, types
     fake_mod = types.ModuleType("summarizeaudio.settings_window")
     fake_mod.SettingsWindow = fake_window_cls
@@ -1111,8 +1126,6 @@ def _fake_wm_immediate():
     )
 ```
 
-(No change needed if the fakes are already keyword-tolerant via SimpleNamespace; the `WindowManager` factory monkeypatch needs to accept `on_rebuild_tray=None` though.)
-
 Update every monkeypatch that intercepts `WindowManager(...)` to accept the new kwargs. Search for `WindowManager:` lambda signatures in `tests/test_tray.py`:
 
 ```python
@@ -1124,17 +1137,12 @@ lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm()
 
 Apply to every occurrence in `tests/test_tray.py`.
 
-- [ ] **Step 2: Run tests to confirm baseline still passes (some may be RED)**
+- [ ] **Step 2: Do NOT commit yet**
 
-Run: `./venv/bin/python -m pytest tests/test_tray.py -v 2>&1 | tail -40`
-Expected: many failures because tray.py still references removed methods AND because we removed two tests. That's fine — we'll fix tray.py next.
+The test changes from Step 1 leave the working tree in a state where tests will fail (tray.py still references the removed methods). Hold the changes uncommitted and continue immediately to Task 5.2; both tasks will be committed together as a single green commit at the end of Task 5.2.
 
-- [ ] **Step 3: Commit the test cleanup**
-
-```bash
-git add tests/test_tray.py
-git commit -m "test(tray): drop Fast/High Quality menu tests; accept on_rebuild_tray kwarg"
-```
+Run: `./venv/bin/python -m pytest tests/test_tray.py -v 2>&1 | tail -20`
+Expected: failures referencing removed model menu items. Do not commit; proceed to 5.2.
 
 ### Task 5.2: Tray refactor — remove old, add new
 
@@ -1317,12 +1325,14 @@ diff /tmp/baseline_failures.txt /tmp/current_failures.txt
 
 Empty diff = no regressions.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit (combines Task 5.1 + 5.2 as one green commit)**
 
 ```bash
 git add summarizeaudio/tray.py tests/test_tray.py
 git commit -m "feat(tray): replace Fast/High Quality submenu with status items + Settings"
 ```
+
+Both the test cleanup (5.1) and the tray refactor (5.2) land together so no intermediate red commit is created.
 
 ---
 
@@ -1373,9 +1383,15 @@ Open Workflow (Start Recording, stop after 3s — Workflow opens after stop). Wi
 
 With Settings open, click `Input Audio: ...` again. Settings window is brought to front, no second window opened.
 
-- [ ] **Step 8: Verify Ollama-down state**
+- [ ] **Step 8: Verify Ollama-down state (optional, skip if Ollama is hosting other workloads)**
 
-Run: `pkill -f ollama` (if Ollama is running). Reopen Settings. Summarization combobox shows "Ollama not running..." and Apply is disabled. Then `ollama serve &` to bring it back.
+If Ollama is running only for this app, stop it safely (do NOT blanket-`pkill -f ollama` if you have other Ollama-dependent processes):
+- Find the PID: `pgrep -fl 'ollama serve' | head -1`
+- Stop just that PID: `kill <pid>`
+
+Reopen Settings. Summarization combobox shows "Ollama not running..." and Apply is disabled. Restart Ollama with `ollama serve &` to bring it back.
+
+If Ollama is shared with other apps, skip this step.
 
 - [ ] **Step 9: No commit; this step is manual verification only.**
 
