@@ -131,16 +131,23 @@ Both comboboxes are `ttk.Combobox(state="readonly")`.
 
 Single click handler (runs on the Tk main thread):
 
-1. Read the two combobox selections.
-2. Translate display labels back to stored values:
+1. Snapshot pre-Apply values: `old_device = cfg.recording.input_device; old_model = cfg.ollama.model`. Required so the exception handler can restore in-memory state if `save_config` raises.
+2. Read the two combobox selections.
+3. Translate display labels back to stored values:
    - `"Auto-detect (...)"` → store empty string in `cfg.recording.input_device`.
    - Any other Input Audio entry → store the bare device name.
    - Summarization entry → store the bare model name (strip the ` · embedding` or `(not installed)` suffix if present, though "not installed" should never be applied since the entry remains selected only when the user hasn't changed selection).
-3. Call `save_config(cfg)`.
-4. Enqueue `("rebuild_tray_menu",)` on `ui_queue`.
-5. Destroy the window.
+4. Mutate `cfg` in place with the translated values.
+5. Call `save_config(cfg)`.
+6. Enqueue `("rebuild_tray_menu",)` on `ui_queue`.
+7. Destroy the window.
 
-On `save_config` exception: show inline error label inside the window (`"Failed to save settings: <reason>"`), keep window open, revert in-memory cfg to pre-Apply values.
+On `save_config` exception:
+- Restore: `cfg.recording.input_device = old_device; cfg.ollama.model = old_model`.
+- Show inline error label inside the window: `"Failed to save settings: <reason>"`.
+- Keep window open. Do NOT enqueue `rebuild_tray_menu` (in-memory cfg is back to pre-Apply state, tray label is already correct).
+
+`save_config` is confirmed to raise `OSError` (permission denied, disk full) without a try/except wrapper — see `config.py:261-288`.
 
 ### Cancel button
 
@@ -150,7 +157,8 @@ Destroys the window; no config mutation, no tray refresh.
 
 - `Return` → Apply (if enabled).
 - `Escape` → Cancel.
-- `Cmd-W` (mac) / `Alt-F4` (others) → Cancel.
+
+No `Cmd-W` / `Alt-F4` binding. Existing windows (`WorkflowWindow`, `HistoryWindow`, `alert_window.py`) rely solely on `protocol("WM_DELETE_WINDOW", ...)` for close; this window follows the same convention. `Return` and `Escape` are new conventions established here for the dropdown-pick UX; not backported to other windows in this work.
 
 ### Active-pipeline banner
 
@@ -214,8 +222,14 @@ Track `self._last_pipeline_active: bool = False`, updated from a new branch in `
 elif kind == "set_icon":
     _, state = item
     self._last_pipeline_active = state in {"recording", "processing"}
-    if self._on_icon_state is not None: ...
+    if self._on_icon_state is not None:
+        try:
+            self._on_icon_state(state)
+        except Exception:
+            log.debug("Error in on_icon_state callback", exc_info=True)
 ```
+
+The existing try/except body is preserved verbatim; only the `_last_pipeline_active` assignment is new.
 
 ### `_handle` additions
 
@@ -239,7 +253,9 @@ if self._settings_win is not None and not _win_alive(self._settings_win._win):
 
 ### Constructor change
 
-Add optional `on_rebuild_tray: Callable[[], None] | None = None` parameter, store as `self._on_rebuild_tray`. Tray registers a callback that calls `icon.update_menu()`.
+Add optional `on_rebuild_tray: Callable[[], None] | None = None` parameter, store as `self._on_rebuild_tray`. Tray registers a callback that calls `self._rebuild_menu()` (which performs the `self._tray.menu = pystray.Menu(...)` assignment that triggers pystray's internal menu update).
+
+**Note on dual rebuild paths:** The existing `_on_icon_state` callback in `tray.py:406-412` already calls `_rebuild_menu()` directly and is unchanged by this work. The new `rebuild_tray_menu` queue message provides a second path for the Settings window to trigger a rebuild after Apply, without going through icon state. Both paths call the same `_rebuild_menu()` method, which reads the latest `cfg` values for its labels.
 
 ### `block_for_open_window` is unchanged
 
@@ -275,8 +291,9 @@ self._window_manager = WindowManager(
 
 ```python
 def _on_rebuild_tray_request(self) -> None:
-    # Runs on the Tk main thread. Tray icon's update_menu is documented
-    # thread-safe.
+    # Runs on the Tk main thread (invoked from WindowManager._handle).
+    # Do not call from the pystray thread — _rebuild_menu mutates the
+    # patched Darwin menu state and must stay on the main thread.
     self._rebuild_menu()
 ```
 
@@ -284,7 +301,7 @@ def _on_rebuild_tray_request(self) -> None:
 
 - Remove the `"Summarization Model"` disabled header, `_on_quality_fast`, `_on_quality_high`, `_model_label` callsites in `_rebuild_menu`.
 - Delete the `_on_quality_fast`, `_on_quality_high`, `_model_label`, and `_set_model` methods entirely.
-- Add two new `MenuItem` entries below the existing `History…` separator, before the `Quit` separator:
+- Add two new `MenuItem` entries below the existing `History…` separator, before the `Quit` separator. **Placement:** these items live inside the existing `elif not processing:` branch (same branch as the `History…` item they follow). They do NOT appear during active recording (where the menu collapses to `Stop Recording`) or during processing (where the menu collapses to `Processing…`). The user cannot change settings while the pipeline is active anyway, and keeping the menu narrow during pipeline activity matches the current UX.
 
 ```python
 items.append(pystray.MenuItem(self._input_audio_label(), self._on_settings_click))
@@ -298,7 +315,8 @@ def _input_audio_label(self) -> str:
     configured = self._cfg.recording.input_device
     if configured:
         return f"Input Audio: {configured}"
-    resolved = _resolve_auto_input_device()  # None on failure
+    from summarizeaudio.recorder import resolve_auto_input_device_name
+    resolved = resolve_auto_input_device_name()  # None on failure
     if resolved:
         return f"Input Audio: Auto ({resolved})"
     return "Input Audio: Auto (none)"
@@ -310,9 +328,22 @@ def _on_settings_click(self, icon, item) -> None:
     self._ui_queue.put(("show_settings",))
 ```
 
-### `_resolve_auto_input_device`
+### `_resolve_auto_input_device` (new helper)
 
-New module-level helper (or imported from `recorder.py` if a similar helper already exists). Returns the BlackHole-preferred input device name, or the first input device, or `None` on any exception.
+`recorder.py` today has `_get_loopback_device()` (returns a device **index** or None) and `_resolve_input_device()` (takes a name, returns `(index, name)`). Neither returns just a name string suitable for a tray label.
+
+Add a new module-level helper in `recorder.py`:
+
+```python
+def resolve_auto_input_device_name() -> str | None:
+    """Return the name of the device that auto-detect would pick, or None.
+
+    Wraps the existing _get_loopback_device() + sd.query_devices() logic
+    to surface the device *name* (not index) for display in the tray menu.
+    """
+```
+
+Implementation: call `_get_loopback_device()`; if it returns an index, look it up via `sd.query_devices(idx)` and return its `"name"`; otherwise return `None`. All exceptions caught and converted to `None`.
 
 ---
 
@@ -361,7 +392,7 @@ Identical to Apply minus mutate/save/enqueue. Just destroy.
 
 - **Main thread (Tk):** owns the Settings window, all comboboxes, all button callbacks, `save_config`. Drives `_pump`.
 - **pystray thread:** the two new tray callbacks run here and only call `ui_queue.put(...)`. No Tk calls.
-- **`on_rebuild_tray` callback:** runs on the main thread because it's invoked from `_handle` (which is called from `_pump`). pystray's menu mutation via `self._tray.menu = pystray.Menu(*items)` is documented thread-safe (internally just flips a flag the menu thread observes).
+- **`on_rebuild_tray` callback:** runs on the main thread because it's invoked from `_handle` (which is called from `_pump`). The callback calls `_rebuild_menu()`, which uses the same `self._tray.menu = pystray.Menu(*items)` pattern already in `tray.py:453`. This codebase applies a custom Darwin patch (`_patch_pystray_darwin`) that overrides `_update_menu` — so menu mutation is **not** stock-pystray-thread-safe. We rely on main-thread serialization (always invoked from `_handle`) for safety, not on pystray's thread guarantees.
 
 No new threads are introduced. No locks are required.
 
@@ -437,7 +468,7 @@ Per project memory, 7 pre-existing failures exist in `tests/test_workflow_window
 | `summarizeaudio/ollama_client.py` | new | ~60 LOC, single function + dataclass |
 | `summarizeaudio/window_manager.py` | modify | add `show_settings`, `_settings_win`, `_last_pipeline_active`, `on_rebuild_tray` ctor arg, sweep entry, two new `_handle` branches, activation-policy update |
 | `summarizeaudio/tray.py` | modify | remove Fast/High Quality items + helpers; add two new menu items, two label helpers, `_on_settings_click`, `_on_rebuild_tray_request`; pass new ctor kwarg to WindowManager |
-| `summarizeaudio/recorder.py` | possibly modify | expose `_resolve_auto_input_device()` if not already accessible from tray |
+| `summarizeaudio/recorder.py` | modify | add `resolve_auto_input_device_name() -> str \| None` module-level helper that wraps `_get_loopback_device()` + `sd.query_devices()` to return the resolved name string |
 | `summarizeaudio/config.py` | unchanged | existing fields cover both settings |
 | `tests/test_settings_window.py` | new | per Testing section |
 | `tests/test_ollama_client.py` | new | per Testing section |
@@ -445,4 +476,4 @@ Per project memory, 7 pre-existing failures exist in `tests/test_workflow_window
 | `tests/test_tray.py` | modify | extend per Testing section |
 | `docs/adr.md` | append | one ADR entry: "Settings window + dynamic Ollama model list" |
 | `docs/learnings.md` | append-if-applicable | only if a new gotcha surfaces during implementation |
-| `docs/architecture.md` | update | reflect new `settings_window.py` and `ollama_client.py` in component list and Mermaid diagram |
+| `docs/architecture.md` | update | reflect new `settings_window.py` and `ollama_client.py` in component list and Mermaid diagram. Also remove the stale `rumps` "currently used on macOS; being replaced by pystray" line — the pystray migration is complete. |
