@@ -13,6 +13,7 @@ from summarizeaudio.config import AppConfig
 if TYPE_CHECKING:
     from summarizeaudio.workflow_window import WorkflowWindow
     from summarizeaudio.history_window import HistoryWindow
+    from summarizeaudio.settings_window import SettingsWindow
 
 log = logging.getLogger(__name__)
 
@@ -25,10 +26,12 @@ class WindowManager:
         cfg: AppConfig,
         ui_queue: queue.Queue,
         on_icon_state: Callable[[str], None] | None = None,
+        on_rebuild_tray: Callable[[], None] | None = None,
     ) -> None:
         self._cfg = cfg
         self._ui_queue = ui_queue
         self._on_icon_state = on_icon_state
+        self._on_rebuild_tray = on_rebuild_tray
         self._root = tk.Tk()
         # Set accessory policy AFTER tk.Tk() so Tk has already created its
         # TKApplication subclass (which defines macOSVersion and other selectors
@@ -46,6 +49,8 @@ class WindowManager:
         self._root.after(100, self._pump)
         self._workflow_win: WorkflowWindow | None = None
         self._history_win: HistoryWindow | None = None
+        self._settings_win: SettingsWindow | None = None
+        self._last_pipeline_active: bool = False
         self._dock_icon: Any = None
 
     @property
