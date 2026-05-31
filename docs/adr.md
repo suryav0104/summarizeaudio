@@ -139,3 +139,50 @@ Both `WorkflowWindow` and `HistoryWindow` are redesigned to a streamlined ~560×
 - Windows are less intrusive and proportional to the content they show.
 - The step tracker and inline summary preview are preserved — no reduction in functionality.
 - Minimum window sizes are updated to match the new defaults.
+
+---
+
+## ADR-006: Consolidate input device and summarization model into a Settings window
+
+**Date:** 2026-05-30
+**Status:** Accepted
+
+### Context
+
+The tray menu previously exposed a "Summarization Model" submenu with two presets (Fast Mode = `gemma3:4b`, High Quality Mode = `gemma3:12b`) and no UI for changing the audio input device — that knob lived only in `config.toml`. Two problems:
+
+1. The preset coupling was a leaky abstraction. Users with other Ollama models installed (Llama, Qwen, embedding models) had no way to select them from the UI. Users without `gemma3:12b` installed got a silent failure when they clicked High Quality.
+2. The audio input device was invisible. Users had no way to confirm what the app was capturing, no way to switch between BlackHole (loopback) and the built-in mic without editing TOML.
+
+### Decision
+
+Replace both with a single shared `SettingsWindow` (`settings_window.py`) containing two readonly `ttk.Combobox` dropdowns: Input Audio and Summarization Model. The tray menu surfaces the current selections as two inline status items below the History separator:
+
+```
+Input Audio: BlackHole 2ch
+Summarization: gemma3:4b
+```
+
+Clicking either opens the Settings window. Both menu items use the same click handler — there is no need for two entry points to the same window.
+
+Settings stacks on top of Workflow and History (it is **not** subject to the one-window-at-a-time rule). If already open, clicking refocuses the existing window instead of duplicating. Apply mutates the in-memory `AppConfig`, calls `save_config()`, then posts `("rebuild_tray_menu",)` onto `ui_queue` so the tray status items refresh in place. Save failures roll the config back and surface the error inline on the dialog.
+
+The model dropdown is populated dynamically via `list_installed_models()` (new `ollama_client.py`), which calls Ollama's `/api/tags` endpoint:
+- Returns `None` → Ollama not running. Combo + Apply disabled, instructional text shown.
+- Returns `[]` → Ollama running but no models. Combo + Apply disabled.
+- Returns models → listed by name. Embedding models (family `bert`/`nomic-bert` or name containing `embed`) get a "· embedding" suffix as a soft warning.
+- If the configured model is not installed, a `<model> (not installed)` row is injected at the top so the user can see what was previously configured.
+
+The input device dropdown is populated via `sd.query_devices()` filtered to inputs, with a first entry of `Auto-detect (<resolved name>)` that maps to `recording.input_device = None` (the existing cascade: BlackHole loopback → system default).
+
+The Fast/High Quality preset concept and the standalone Diarization toggle are both dropped entirely.
+
+### Consequences
+
+- Users can select any installed Ollama model, not just the two presets.
+- Audio input device is visible at a glance and changeable without editing TOML.
+- The tray menu is shorter (two flat items instead of a submenu).
+- Pre-existing config keys (`recording.input_device`, `ollama.model`) are unchanged — no migration needed.
+- Settings does NOT participate in the Workflow ↔ History block, by design: changing settings during a long transcription is a reasonable user expectation.
+- Apply runs `save_config` synchronously on the Tk main thread. Acceptable because `save_config` writes a small TOML file; if it ever grows expensive, move to a worker thread.
+- `ollama_client.list_installed_models` swallows connection errors and returns `None` so the Settings window can render a useful state when Ollama is down rather than crashing.

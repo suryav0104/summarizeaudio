@@ -10,9 +10,8 @@
 |---|---|
 | `Python 3.11+` | Primary language |
 | `pystray` | Cross-platform system tray icon library — renders the menu bar icon and menu. On macOS it runs in a background thread, leaving the main thread free for Tk. |
-| `rumps` | macOS-only menu bar framework (wraps `NSApp` / `NSMenu`). **Currently used on macOS; being replaced by `pystray` — see ADR-003.** Runs on the main thread, which prevents Tk from running in the same process. |
-| `tkinter` (stdlib) | Python's built-in GUI toolkit. Draws all pop-up windows: workflow progress, history, file pickers, prompt editor. Must run on the main thread. |
-| `rumps` vs `pystray` vs `tkinter` | See the [Library Roles](#library-roles-tk-pystray-rumps) section below for a plain-English explanation. |
+| `tkinter` (stdlib) | Python's built-in GUI toolkit. Draws all pop-up windows: workflow progress, history, settings, file pickers, prompt editor. Must run on the main thread. |
+| `pystray` vs `tkinter` | See the [Library Roles](#library-roles-tk-pystray) section below for a plain-English explanation. |
 | `sounddevice` | Cross-platform audio capture (wraps PortAudio). Used for mic + system loopback recording. |
 | `numpy` | Audio chunk handling inside `sounddevice` callbacks. |
 | `wave` (stdlib) | Incremental WAV file writing during recording; flushes to disk every 30 seconds. |
@@ -29,15 +28,15 @@
 
 ---
 
-## Library Roles: Tk, pystray, rumps
+## Library Roles: Tk, pystray
 
-These three libraries each handle a different part of the UI and have important interactions:
+These two libraries each handle a different part of the UI:
 
 **Tkinter (tk)** draws the actual windows — the progress bar, buttons, text fields, step list, and summary preview that appear when a workflow runs. It is bundled with Python, so no extra install is needed. On macOS, Tk must run on the **main thread** of the process; calling it from a background thread causes crashes.
 
-**rumps** is a macOS-only library for putting an icon in the menu bar (the strip in the top-right corner of the screen where Wi-Fi and the clock live). It wraps Apple's native `NSApp` and runs its own event loop on the **main thread**. The benefit: it sets `NSApplicationActivationPolicy` to `Accessory` at startup, which tells macOS "this is a menu bar app, not a regular app" — so no dock icon ever appears. The problem: because `rumps` owns the main thread, there is no room for Tk. This is why the current implementation spawns a separate Python subprocess for every window, and those subprocesses produce Python dock icons.
+**pystray** puts an icon in the menu bar / system tray and works cross-platform (macOS, Windows, Linux). On macOS it runs the tray icon in a **background thread**, leaving the main thread free for Tk. Combined with calling `NSApp.setActivationPolicy(.accessory)` once at startup, this lets the app run as a menu bar accessory (no dock icon, no CMD+Tab entry) while keeping all windows in a single process.
 
-**pystray** also puts an icon in the menu bar / system tray and works cross-platform (macOS, Windows, Linux). The key difference from `rumps`: on macOS it runs the tray icon in a **background thread**, leaving the main thread free. This means Tk can run in the same process without any subprocess gymnastics. Replacing `rumps` with `pystray` on macOS — combined with calling `NSApp.setActivationPolicy(.accessory)` once at startup — is the mechanism that eliminates dock icons entirely while keeping windows in a single process.
+Because pystray callbacks fire on the pystray background thread, they must never touch Tk widgets directly. All UI work goes through the `ui_queue` and is dispatched on the Tk main thread by `WindowManager._pump`.
 
 ---
 
@@ -47,9 +46,11 @@ These three libraries each handle a different part of the UI and have important 
 |---|---|---|
 | Entry point | `__main__.py` | Sets up logging, applies macOS activation policy (no dock icon), starts `TrayApp`. |
 | Tray app | `tray.py` | Owns the `pystray` icon lifecycle, menu state, icon state, single-instance lockfile, and `ui_queue` drain loop. Posts window commands to `WindowManager` via the queue. |
-| Window manager | `window_manager.py` | **Runs on the main thread.** Owns all Tk windows. Creates `WorkflowWindow` and `HistoryWindow` on demand; reuses or closes existing windows when the tray requests a new action. |
+| Window manager | `window_manager.py` | **Runs on the main thread.** Owns all Tk windows. Creates `WorkflowWindow`, `HistoryWindow`, and `SettingsWindow` on demand; reuses or closes existing windows when the tray requests a new action. Pumps `ui_queue` every 100 ms and sweeps stale window refs. |
 | Workflow window | `workflow_window.py` | Tk window (~560×480px) that drives the full workflow: file chooser → progress + progress bar → prompt editor → name input → summary preview. Retargetable — can be switched to a new mode without closing. |
 | History window | `history_window.py` | Tk window showing past sessions (transcript, audio, summary links). Reused on successive "History" menu clicks. |
+| Settings window | `settings_window.py` | Modal Tk window with two readonly dropdowns: Input Audio device and Summarization model. Stacks on top of Workflow/History (not subject to the one-window-at-a-time rule). Apply mutates config in place, calls `save_config`, posts `("rebuild_tray_menu",)` so the tray status items refresh. |
+| Ollama client | `ollama_client.py` | Lightweight wrapper around the Ollama `/api/tags` HTTP endpoint. `list_installed_models(host)` returns `[ModelInfo]` on success, `[]` if Ollama is reachable but no models are installed, and `None` if Ollama is unreachable. Powers the Settings model dropdown. |
 | UI dispatcher | `ui_dispatcher.py` | Thread-safe `queue.Queue` (`ui_queue`) + drain function. The single channel through which all background threads communicate with the main thread. |
 | Pipeline | `pipeline.py` | Background thread entry point for all three modes (record / local audio / local text). Posts progress events, phase changes, errors, and results to `ui_queue`. |
 | Recorder | `recorder.py` | Platform-aware audio capture. Writes audio incrementally to a temp `.wav`, flushes every 30 s. Converts to `.mp3` on stop. |
@@ -76,7 +77,8 @@ Main thread — tk.mainloop()
   │
   └── WindowManager
         ├── WorkflowWindow (Tk widgets, lives here)
-        └── HistoryWindow  (Tk widgets, lives here)
+        ├── HistoryWindow  (Tk widgets, lives here)
+        └── SettingsWindow (Tk Toplevel, may stack on either of above)
 
 pystray thread (background)
   └── renders tray icon + menu
@@ -153,9 +155,11 @@ flowchart TB
             WM["WindowManager"]
             WW["WorkflowWindow\n~560×480px Tk"]
             HW["HistoryWindow\nTk"]
+            SW["SettingsWindow\nTk Toplevel"]
             QP -->|dispatch| WM
             WM -->|create / reuse| WW
             WM -->|create / reuse| HW
+            WM -->|create / reuse| SW
         end
         subgraph bg["Background Threads"]
             PT["pystray\ntray icon"]
