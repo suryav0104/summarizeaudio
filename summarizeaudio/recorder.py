@@ -76,6 +76,20 @@ def _resolve_input_device(input_device: str | None) -> tuple[int | None, str | N
     return int(default_input), str(dev["name"])
 
 
+def resolve_auto_input_device_name() -> str | None:
+    """Return the name auto-detect would pick (loopback or system default).
+
+    Returns None when no input device is reachable or the probe raises.
+    Used by the Settings window to render "Auto (BlackHole 2ch)" style labels
+    without committing the resolved name to config.
+    """
+    try:
+        _index, name = _resolve_input_device(None)
+        return name
+    except Exception:
+        return None
+
+
 def check_input_health(input_device: str | None) -> InputHealthReport:
     """Probe the selected input device and detect silent/default-channel issues."""
     try:
