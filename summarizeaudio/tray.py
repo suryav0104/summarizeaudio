@@ -15,10 +15,10 @@ from typing import TYPE_CHECKING
 import pystray
 from PIL import Image
 
-from summarizeaudio.config import load_config, save_config
+from summarizeaudio.config import load_config
 from summarizeaudio.error_handler import format_error
 from summarizeaudio.notifier import notify
-from summarizeaudio.recorder import Recorder, check_input_health
+from summarizeaudio.recorder import Recorder, check_input_health, resolve_auto_input_device_name
 
 if TYPE_CHECKING:
     from summarizeaudio.window_manager import WindowManager
@@ -152,7 +152,10 @@ class TrayApp:
         # Imported here to avoid circular imports at module level.
         from summarizeaudio.window_manager import WindowManager
         self._window_manager = WindowManager(
-            self._cfg, self._ui_queue, on_icon_state=self._on_icon_state
+            self._cfg,
+            self._ui_queue,
+            on_icon_state=self._on_icon_state,
+            on_rebuild_tray=self._on_rebuild_tray_request,
         )
         self._startup_input_check_started = False
         self._input_health_pump_started = False
@@ -317,14 +320,24 @@ class TrayApp:
     def _on_history(self, icon, item) -> None:
         self._ui_queue.put(("show_history",))
 
-    def _on_quality_fast(self, icon, item) -> None:
-        self._set_model("gemma3:4b", "Fast (4B)")
+    def _input_audio_label(self) -> str:
+        configured = self._cfg.recording.input_device
+        if configured:
+            return f"Input Audio: {configured}"
+        resolved = resolve_auto_input_device_name()
+        if resolved:
+            return f"Input Audio: Auto ({resolved})"
+        return "Input Audio: Auto (none)"
 
-    def _on_quality_high(self, icon, item) -> None:
-        self._set_model("gemma3:12b", "High Quality (12B)")
+    def _summarization_label(self) -> str:
+        return f"Summarization: {self._cfg.ollama.model}"
 
-    def _model_label(self, model: str, label: str) -> str:
-        return f"✓ {label}" if self._cfg.ollama.model == model else label
+    def _on_settings_click(self, icon, item) -> None:
+        self._ui_queue.put(("show_settings",))
+
+    def _on_rebuild_tray_request(self) -> None:
+        # Runs on the Tk main thread (invoked from WindowManager._handle).
+        self._rebuild_menu()
 
     def _remove_tray_icon(self) -> None:
         """Explicitly remove the NSStatusItem via AppKit.
@@ -413,11 +426,6 @@ class TrayApp:
 
     # ── Icon and menu helpers ─────────────────────────────────────────────────
 
-    def _set_model(self, model: str, label: str) -> None:
-        self._cfg.ollama.model = model
-        save_config(self._cfg)
-        self._rebuild_menu()
-
     def _set_icon(self, state: str) -> None:
         if self._tray:
             if sys.platform == "darwin":
@@ -441,11 +449,8 @@ class TrayApp:
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("History…", self._on_history))
             items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem("Summarization Model", None, enabled=False))
-            fast_label = self._model_label("gemma3:4b", "Fast Mode (gemma3:4b)")
-            high_label = self._model_label("gemma3:12b", "High Quality Mode (gemma3:12b)")
-            items.append(pystray.MenuItem(fast_label, self._on_quality_fast))
-            items.append(pystray.MenuItem(high_label, self._on_quality_high))
+            items.append(pystray.MenuItem(self._input_audio_label(), self._on_settings_click))
+            items.append(pystray.MenuItem(self._summarization_label(), self._on_settings_click))
         else:
             items.append(pystray.MenuItem("Processing…", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)

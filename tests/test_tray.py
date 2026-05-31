@@ -58,54 +58,9 @@ def _ok_health_report() -> InputHealthReport:
     )
 
 
-def test_model_menu_checks_current_config_model(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:12b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
-    app = TrayApp()
-    app._tray = SimpleNamespace(menu=None)
-
-    app._rebuild_menu()
-
-    items = list(app._tray.menu.items)
-    fast = next(item for item in items if "Fast Mode (gemma3:4b)" in item.text)
-    high = next(item for item in items if "High Quality Mode (gemma3:12b)" in item.text)
-    assert fast.text == "Fast Mode (gemma3:4b)"
-    assert high.text == "✓ High Quality Mode (gemma3:12b)"
-
-
-def test_model_menu_updates_checkmark_after_selection(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
-    saved = []
-
-    def fake_save(cfg):
-        saved.append(cfg.ollama.model)
-
-    monkeypatch.setattr("summarizeaudio.tray.save_config", fake_save)
-    app = TrayApp()
-    app._tray = SimpleNamespace(menu=None)
-
-    app._rebuild_menu()
-    items = list(app._tray.menu.items)
-    fast = next(item for item in items if "Fast Mode (gemma3:4b)" in item.text)
-    high = next(item for item in items if "High Quality Mode (gemma3:12b)" in item.text)
-    assert fast.text == "✓ Fast Mode (gemma3:4b)"
-    assert high.text == "High Quality Mode (gemma3:12b)"
-
-    app._on_quality_high(None, None)
-
-    app._rebuild_menu()
-    items = list(app._tray.menu.items)
-    fast = next(item for item in items if "Fast Mode (gemma3:4b)" in item.text)
-    high = next(item for item in items if "High Quality Mode (gemma3:12b)" in item.text)
-    assert fast.text == "Fast Mode (gemma3:4b)"
-    assert high.text == "✓ High Quality Mode (gemma3:12b)"
-    assert saved[-1] == "gemma3:12b"
-
-
 def test_history_menu_shows_popup_item(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None)
 
@@ -117,7 +72,7 @@ def test_history_menu_shows_popup_item(tmp_path, monkeypatch):
 
 def test_on_history_posts_show_history_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     app = TrayApp()
 
     app._on_history(None, None)
@@ -128,7 +83,7 @@ def test_on_history_posts_show_history_to_queue(tmp_path, monkeypatch):
 
 def test_on_local_audio_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     app = TrayApp()
 
     app._on_local_audio(None, None)
@@ -140,7 +95,7 @@ def test_on_local_audio_posts_show_workflow_to_queue(tmp_path, monkeypatch):
 
 def test_on_local_text_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     app = TrayApp()
 
     app._on_local_text(None, None)
@@ -152,7 +107,7 @@ def test_on_local_text_posts_show_workflow_to_queue(tmp_path, monkeypatch):
 
 def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
 
     class FakeRecorder:
         stopped = False
@@ -181,7 +136,7 @@ def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
 
 def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     monkeypatch.setattr("summarizeaudio.tray.check_input_health", lambda _device: _ok_health_report())
 
     class FakeRecorder:
@@ -205,7 +160,7 @@ def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
 
 def test_on_icon_state_manages_pipeline_running_flag(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None, icon=None)
 
@@ -237,7 +192,7 @@ def test_quit_arms_force_exit_and_quits_root(tmp_path, monkeypatch):
             calls.append(("destroy",))
 
     fake_wm = SimpleNamespace(root=FakeRoot(), close_all=lambda: calls.append(("close_all",)))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: fake_wm)
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: fake_wm)
 
     app = TrayApp()
     monkeypatch.setattr(app, "_schedule_force_exit", lambda delay=0.8: calls.append(("force_exit", delay)))
@@ -255,7 +210,7 @@ def test_quit_arms_force_exit_and_quits_root(tmp_path, monkeypatch):
 def test_quit_cleans_up_active_recorder(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr("summarizeaudio.tray.LOCK_FILE", tmp_path / "app.lock")
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
     app = TrayApp()
     monkeypatch.setattr(app, "_schedule_force_exit", lambda delay=0.8: None)
 
@@ -277,7 +232,7 @@ def test_quit_cleans_up_active_recorder(tmp_path, monkeypatch):
 
 def test_startup_input_health_alerts_for_channel_mapping_issue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
     monkeypatch.setattr(
         "summarizeaudio.tray.check_input_health",
         lambda _device: InputHealthReport(
@@ -312,7 +267,7 @@ def test_startup_input_health_alerts_for_channel_mapping_issue(tmp_path, monkeyp
 
 def test_startup_input_health_does_not_alert_for_no_signal(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
     monkeypatch.setattr(
         "summarizeaudio.tray.check_input_health",
         lambda _device: InputHealthReport(
@@ -347,7 +302,7 @@ def test_startup_input_health_does_not_alert_for_no_signal(tmp_path, monkeypatch
 
 def test_start_recording_stops_and_alerts_for_channel_mapping_issue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
 
     class FakeRecorder:
         def __init__(self, *args, **kwargs):
@@ -398,7 +353,7 @@ def test_start_recording_stops_and_alerts_for_channel_mapping_issue(tmp_path, mo
 
 def test_start_recording_keeps_running_for_no_signal(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
 
     class FakeRecorder:
         def __init__(self, *args, **kwargs):
@@ -449,7 +404,7 @@ def test_start_recording_keeps_running_for_no_signal(tmp_path, monkeypatch):
 
 def test_start_recording_device_missing_uses_health_warning(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
 
     warning = (
         "Configured recording device 'Multi-input device' was not found. "
@@ -488,7 +443,7 @@ def test_start_recording_device_missing_uses_health_warning(tmp_path, monkeypatc
 
 def test_startup_input_health_stops_active_recording_for_channel_mapping_issue(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
     notifications = []
     monkeypatch.setattr("summarizeaudio.tray.notify", lambda message, title="SummarizeAudio": notifications.append((title, message)))
 
@@ -521,3 +476,83 @@ def test_startup_input_health_stops_active_recording_for_channel_mapping_issue(t
     assert recorder.cleaned is True
     assert app._recorder is None
     assert notifications == [("Recording Input Problem", "channel mapping problem")]
+
+
+def test_rebuild_menu_has_input_audio_and_summarization_items(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: "BlackHole 2ch")
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None)
+    app._rebuild_menu()
+
+    items = list(app._tray.menu.items)
+    texts = [getattr(item, "text", "") for item in items]
+    assert "Input Audio: Auto (BlackHole 2ch)" in texts
+    assert "Summarization: gemma3:4b" in texts
+    assert not any("Fast Mode" in t for t in texts)
+    assert not any("High Quality Mode" in t for t in texts)
+    assert not any(t == "Summarization Model" for t in texts)
+
+
+def test_input_audio_label_uses_configured_name_when_set(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._cfg.recording.input_device = "USB Mic"
+    assert app._input_audio_label() == "Input Audio: USB Mic"
+
+
+def test_input_audio_label_falls_back_when_resolution_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: None)
+    app = TrayApp()
+    assert app._input_audio_label() == "Input Audio: Auto (none)"
+
+
+def test_settings_click_enqueues_show_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._on_settings_click(None, None)
+    assert app._ui_queue.get_nowait() == ("show_settings",)
+
+
+def test_on_rebuild_tray_request_calls_rebuild_menu(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None)
+    app._rebuild_menu = lambda: setattr(app, "_rebuilt", True)
+    app._on_rebuild_tray_request()
+    assert getattr(app, "_rebuilt", False) is True
+
+
+def test_window_manager_receives_on_rebuild_tray(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    captured = {}
+
+    def fake_wm_factory(cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None):
+        captured["on_rebuild_tray"] = on_rebuild_tray
+        return _fake_wm()
+
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", fake_wm_factory)
+    app = TrayApp()
+    assert captured["on_rebuild_tray"] is not None
+    assert captured["on_rebuild_tray"] == app._on_rebuild_tray_request
