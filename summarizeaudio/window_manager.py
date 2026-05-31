@@ -127,8 +127,25 @@ class WindowManager:
         self._history_win = HistoryWindow(self._root, self._cfg, self._ui_queue)
         self._history_win.show()
 
+    def show_settings(self) -> None:
+        """Open the Settings window. Stacks on top of Workflow/History; refocuses
+        if already open. Does NOT participate in the Workflow ↔ History block."""
+        from summarizeaudio.settings_window import SettingsWindow
+
+        if self._settings_win is not None and _win_alive(self._settings_win._win):
+            self._settings_win._focus()
+            return
+
+        self._settings_win = SettingsWindow(
+            self._root,
+            self._cfg,
+            self._ui_queue,
+            pipeline_active=self._last_pipeline_active,
+        )
+        self._settings_win.show()
+
     def close_all(self) -> None:
-        for win in (self._workflow_win, self._history_win):
+        for win in (self._workflow_win, self._history_win, self._settings_win):
             if win is not None:
                 try:
                     win.close()
@@ -136,6 +153,7 @@ class WindowManager:
                     pass
         self._workflow_win = None
         self._history_win = None
+        self._settings_win = None
 
     def _load_dock_icon(self) -> Any:
         try:
@@ -160,6 +178,7 @@ class WindowManager:
             any_open = (
                 (self._workflow_win is not None and _win_alive(self._workflow_win._win))
                 or (self._history_win is not None and _win_alive(self._history_win._win))
+                or (self._settings_win is not None and _win_alive(self._settings_win._win))
             )
             policy = (
                 AppKit.NSApplicationActivationPolicyRegular
@@ -204,6 +223,8 @@ class WindowManager:
             self._workflow_win = None
         if self._history_win is not None and not _win_alive(self._history_win._win):
             self._history_win = None
+        if self._settings_win is not None and not _win_alive(self._settings_win._win):
+            self._settings_win = None
 
     def _pump(self) -> None:
         try:
@@ -232,11 +253,22 @@ class WindowManager:
         elif kind == "show_history":
             self.show_history()
 
+        elif kind == "show_settings":
+            self.show_settings()
+
+        elif kind == "rebuild_tray_menu":
+            if self._on_rebuild_tray is not None:
+                try:
+                    self._on_rebuild_tray()
+                except Exception:
+                    log.debug("Error in on_rebuild_tray callback", exc_info=True)
+
         elif kind == "show_blocked_toast":
             self._show_blocked_toast_main_thread()
 
         elif kind == "set_icon":
             _, state = item
+            self._last_pipeline_active = state in {"recording", "processing"}
             if self._on_icon_state is not None:
                 try:
                     self._on_icon_state(state)
