@@ -323,17 +323,23 @@ class TrayApp:
     def _input_audio_label(self) -> str:
         configured = self._cfg.recording.input_device
         if configured:
-            return f"Input Audio: {configured}"
+            return f"Input  \u2192  {configured}"
         resolved = resolve_auto_input_device_name()
         if resolved:
-            return f"Input Audio: Auto ({resolved})"
-        return "Input Audio: Auto (none)"
+            return f"Input  \u2192  Auto ({resolved})"
+        return "Input  \u2192  Auto (none)"
 
     def _summarization_label(self) -> str:
-        return f"Summarization: {self._cfg.ollama.model}"
+        return f"Model  \u2192  {self._cfg.ollama.model}"
 
     def _on_settings_click(self, icon, item) -> None:
         self._ui_queue.put(("show_settings",))
+
+    def _on_settings_click_input(self, icon, item) -> None:
+        self._ui_queue.put(("show_settings", "input"))
+
+    def _on_settings_click_model(self, icon, item) -> None:
+        self._ui_queue.put(("show_settings", "model"))
 
     def _on_rebuild_tray_request(self) -> None:
         # Runs on the Tk main thread (invoked from WindowManager._handle).
@@ -449,8 +455,8 @@ class TrayApp:
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("History…", self._on_history))
             items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem(self._input_audio_label(), self._on_settings_click))
-            items.append(pystray.MenuItem(self._summarization_label(), self._on_settings_click))
+            items.append(pystray.MenuItem(self._input_audio_label(), self._on_settings_click_input))
+            items.append(pystray.MenuItem(self._summarization_label(), self._on_settings_click_model))
         else:
             items.append(pystray.MenuItem("Processing…", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)

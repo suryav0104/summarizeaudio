@@ -491,8 +491,8 @@ def test_rebuild_menu_has_input_audio_and_summarization_items(tmp_path, monkeypa
 
     items = list(app._tray.menu.items)
     texts = [getattr(item, "text", "") for item in items]
-    assert "Input Audio: Auto (BlackHole 2ch)" in texts
-    assert "Summarization: gemma3:4b" in texts
+    assert "Input  \u2192  Auto (BlackHole 2ch)" in texts
+    assert "Model  \u2192  gemma3:4b" in texts
     assert not any("Fast Mode" in t for t in texts)
     assert not any("High Quality Mode" in t for t in texts)
     assert not any(t == "Summarization Model" for t in texts)
@@ -506,7 +506,7 @@ def test_input_audio_label_uses_configured_name_when_set(tmp_path, monkeypatch):
     )
     app = TrayApp()
     app._cfg.recording.input_device = "USB Mic"
-    assert app._input_audio_label() == "Input Audio: USB Mic"
+    assert app._input_audio_label() == "Input  \u2192  USB Mic"
 
 
 def test_input_audio_label_falls_back_when_resolution_fails(tmp_path, monkeypatch):
@@ -517,7 +517,7 @@ def test_input_audio_label_falls_back_when_resolution_fails(tmp_path, monkeypatc
     )
     monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: None)
     app = TrayApp()
-    assert app._input_audio_label() == "Input Audio: Auto (none)"
+    assert app._input_audio_label() == "Input  \u2192  Auto (none)"
 
 
 def test_settings_click_enqueues_show_settings(tmp_path, monkeypatch):
@@ -529,6 +529,28 @@ def test_settings_click_enqueues_show_settings(tmp_path, monkeypatch):
     app = TrayApp()
     app._on_settings_click(None, None)
     assert app._ui_queue.get_nowait() == ("show_settings",)
+
+
+def test_input_status_click_enqueues_show_settings_with_input_target(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._on_settings_click_input(None, None)
+    assert app._ui_queue.get_nowait() == ("show_settings", "input")
+
+
+def test_model_status_click_enqueues_show_settings_with_model_target(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._on_settings_click_model(None, None)
+    assert app._ui_queue.get_nowait() == ("show_settings", "model")
 
 
 def test_on_rebuild_tray_request_calls_rebuild_menu(tmp_path, monkeypatch):

@@ -91,7 +91,15 @@ def test_show_settings_message_invokes_show_settings(tmp_path, monkeypatch):
     wm = window_manager.WindowManager(_make_cfg(tmp_path), queue.Queue())
     wm.show_settings = MagicMock()
     wm._handle(("show_settings",))
-    wm.show_settings.assert_called_once()
+    wm.show_settings.assert_called_once_with(focus_target=None)
+
+
+def test_show_settings_message_threads_focus_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(window_manager.tk, "Tk", MagicMock())
+    wm = window_manager.WindowManager(_make_cfg(tmp_path), queue.Queue())
+    wm.show_settings = MagicMock()
+    wm._handle(("show_settings", "input"))
+    wm.show_settings.assert_called_once_with(focus_target="input")
 
 
 def test_rebuild_tray_menu_message_invokes_callback(tmp_path, monkeypatch):
