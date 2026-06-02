@@ -128,10 +128,12 @@ def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     app._on_stop_recording(None, None)
 
     assert app._recorder is None
-    item = app._ui_queue.get_nowait()
-    assert item[0] == "show_workflow"
-    assert item[1] == "record"
-    assert item[2] == Path("/tmp/recording.mp3")
+    items = []
+    while not app._ui_queue.empty():
+        items.append(app._ui_queue.get_nowait())
+    # idle icon is routed through the queue (main-thread) before the popup
+    assert ("set_icon", "idle") in items
+    assert ("show_workflow", "record", Path("/tmp/recording.mp3"), None) in items
 
 
 def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
@@ -301,16 +303,19 @@ def test_startup_input_health_does_not_alert_for_no_signal(tmp_path, monkeypatch
 
 
 def test_start_recording_stops_and_alerts_for_channel_mapping_issue(tmp_path, monkeypatch):
+    """Recording starts immediately; the async post-start check then stops it,
+    deletes the wav, and notifies for a channel-mapping problem. (The blocking
+    synchronous pre-start probe was removed.)"""
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
 
     class FakeRecorder:
         def __init__(self, *args, **kwargs):
             self.started = False
-            self.cleaned = False
+            self.cleaned = None
 
         def start(self):
-            raise AssertionError("recorder should not start when pre-start health check fails")
+            self.started = True
 
         def cleanup(self, delete_wav=False):
             self.cleaned = delete_wav
@@ -346,8 +351,12 @@ def test_start_recording_stops_and_alerts_for_channel_mapping_issue(tmp_path, mo
     monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
 
     app._on_start_recording(None, None)
+    recorder = app._recorder
+    assert recorder is not None and recorder.started is True  # started immediately
+    _drain_input_health_once(app)
 
-    assert app._recorder is None
+    assert app._recorder is None  # async check stopped it
+    assert recorder.cleaned is True  # wav discarded
     assert notifications == [("Recording Input Problem", "channel mapping problem")]
 
 
@@ -403,8 +412,11 @@ def test_start_recording_keeps_running_for_no_signal(tmp_path, monkeypatch):
 
 
 def test_start_recording_device_missing_uses_health_warning(tmp_path, monkeypatch):
+    """A missing device is caught by the async post-start check, which stops
+    recording and surfaces the health warning. (The synchronous pre-start probe
+    was removed.)"""
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm_immediate())
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
 
     warning = (
         "Configured recording device 'Multi-input device' was not found. "
@@ -427,18 +439,98 @@ def test_start_recording_device_missing_uses_health_warning(tmp_path, monkeypatc
 
     class FakeRecorder:
         def __init__(self, *args, **kwargs):
-            pass
+            self.started = False
+            self.cleaned = None
 
         def start(self):
-            raise AssertionError("recorder should not start when configured device is missing")
+            self.started = True
+
+        def cleanup(self, delete_wav=False):
+            self.cleaned = delete_wav
 
     monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
+
+    class ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", ImmediateThread)
     app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    monkeypatch.setattr(app, "_set_icon", lambda state: None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
 
     app._on_start_recording(None, None)
+    assert app._recorder is not None and app._recorder.started is True
+    _drain_input_health_once(app)
 
     assert notifications == [("Recording Input Problem", warning)]
     assert app._recorder is None
+
+
+def test_start_recording_has_no_synchronous_prestart_probe(tmp_path, monkeypatch):
+    """Clicking Record must start the recorder and emit the recording icon
+    immediately, without a blocking pre-start check_input_health probe. The
+    only device probe is the deferred async post-start check. Otherwise the
+    ~1.5s sampling sleep stalls recording start and the icon animation."""
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
+
+    probe_calls = {"n": 0}
+
+    def _counting_probe(_device):
+        probe_calls["n"] += 1
+        return InputHealthReport(
+            ok=False, issue="channel_mapping", warning="bad",
+            device_name="Multi-input device", requested_device="Multi-input device",
+            sampled_channels=4, active_channels=(3, 4),
+        )
+
+    monkeypatch.setattr("summarizeaudio.tray.check_input_health", _counting_probe)
+
+    started = {"flag": False}
+
+    class FakeRecorder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            started["flag"] = True
+
+        def cleanup(self, delete_wav=False):
+            return None
+
+    monkeypatch.setattr("summarizeaudio.tray.Recorder", FakeRecorder)
+
+    # Capture the async health-check thread but do NOT run it during the call,
+    # so any probe seen now would have to be a synchronous pre-start one.
+    class CapturedThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("summarizeaudio.tray.threading.Thread", CapturedThread)
+    monkeypatch.setattr("summarizeaudio.tray.notify", lambda *a, **k: None)
+
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+
+    app._on_start_recording(None, None)
+
+    assert started["flag"] is True
+    assert app._recorder is not None
+    assert probe_calls["n"] == 0  # no synchronous pre-start probe
+    items = []
+    while not app._ui_queue.empty():
+        items.append(app._ui_queue.get_nowait())
+    assert ("set_icon", "recording") in items
 
 
 def test_startup_input_health_stops_active_recording_for_channel_mapping_issue(tmp_path, monkeypatch):
@@ -578,3 +670,75 @@ def test_window_manager_receives_on_rebuild_tray(tmp_path, monkeypatch):
     app = TrayApp()
     assert captured["on_rebuild_tray"] is not None
     assert captured["on_rebuild_tray"] == app._on_rebuild_tray_request
+
+
+def _app_with_captured_icon(tmp_path, monkeypatch):
+    """Build a TrayApp whose _set_icon records states and _rebuild_menu is a
+    no-op, for asserting icon-state transitions directly."""
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    states: list[str] = []
+    monkeypatch.setattr(app, "_set_icon", lambda state: states.append(state))
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+    return app, states
+
+
+class _StoppableRecorder:
+    def __init__(self):
+        self.cleaned = None
+
+    def cleanup(self, delete_wav=False):
+        self.cleaned = delete_wav
+
+
+def _stop_report(issue: str, warning: str = "bad device"):
+    return InputHealthReport(
+        ok=False,
+        issue=issue,
+        warning=warning,
+        device_name="Multi-input device",
+        requested_device="Multi-input device",
+        sampled_channels=4,
+        active_channels=(3, 4),
+    )
+
+
+def test_recording_stop_for_channel_mapping_enters_device_error(tmp_path, monkeypatch):
+    """A recording auto-stopped for a genuinely-bad device (channel_mapping)
+    must enter the device-error state with its reprobe recovery, mirroring the
+    startup path — not silently revert to a healthy-looking idle icon."""
+    app, states = _app_with_captured_icon(tmp_path, monkeypatch)
+    recorder = _StoppableRecorder()
+    app._recorder = recorder
+    app._handle_recording_input_health(recorder, _stop_report("channel_mapping"))
+    assert app._recorder is None
+    assert recorder.cleaned is True
+    assert app._device_error_active is True
+    assert states[-1] == "error"
+
+
+def test_recording_stop_for_device_missing_enters_device_error(tmp_path, monkeypatch):
+    app, states = _app_with_captured_icon(tmp_path, monkeypatch)
+    recorder = _StoppableRecorder()
+    app._recorder = recorder
+    app._handle_recording_input_health(recorder, _stop_report("device_missing"))
+    assert app._recorder is None
+    assert app._device_error_active is True
+    assert states[-1] == "error"
+
+
+def test_recording_stop_for_no_frames_goes_idle_not_error(tmp_path, monkeypatch):
+    """no_frames is a stop reason but NOT an alert-worthy device fault, so the
+    icon goes idle and no sticky device error is armed."""
+    app, states = _app_with_captured_icon(tmp_path, monkeypatch)
+    recorder = _StoppableRecorder()
+    app._recorder = recorder
+    app._handle_recording_input_health(recorder, _stop_report("no_frames"))
+    assert app._recorder is None
+    assert app._device_error_active is False
+    assert states[-1] == "idle"

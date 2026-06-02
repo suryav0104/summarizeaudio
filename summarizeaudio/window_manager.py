@@ -51,7 +51,14 @@ class WindowManager:
         self._history_win: HistoryWindow | None = None
         self._settings_win: SettingsWindow | None = None
         self._last_pipeline_active: bool = False
+        self._error_active: bool = False
+        self._prev_any_open: bool = False
         self._dock_icon: Any = None
+        # A pipeline error surfaced with no window open can't clear via the
+        # window-dismiss path (that needs an open->closed transition that never
+        # happens). Auto-revert to idle after this delay so the red icon doesn't
+        # stick forever; the macOS notification is the persistent record.
+        self._error_auto_clear_ms: int = 12000
 
     @property
     def root(self) -> tk.Tk:
@@ -178,6 +185,48 @@ class WindowManager:
             pass
         return None
 
+    def _any_window_open(self) -> bool:
+        return (
+            (self._workflow_win is not None and _win_alive(self._workflow_win._win))
+            or (self._history_win is not None and _win_alive(self._history_win._win))
+            or (self._settings_win is not None and _win_alive(self._settings_win._win))
+        )
+
+    def _emit_icon_state(self, state: str) -> None:
+        if self._on_icon_state is not None:
+            try:
+                self._on_icon_state(state)
+            except Exception:
+                log.debug("Error in on_icon_state callback", exc_info=True)
+
+    def _clear_error_on_window_dismiss(self) -> None:
+        """Clear a persistent error when the last open window closes.
+
+        Only fires on the open->all-closed transition, so a device error that
+        surfaced with no window open (cleared instead by health re-probe) is
+        not dropped spuriously.
+        """
+        any_open = self._any_window_open()
+        if self._error_active and self._prev_any_open and not any_open:
+            self._error_active = False
+            self._emit_icon_state("idle")
+        self._prev_any_open = any_open
+
+    def _schedule_error_auto_clear(self) -> None:
+        """Arm a delayed revert-to-idle for a window-less pipeline error."""
+        try:
+            self._root.after(self._error_auto_clear_ms, self._auto_clear_error)
+        except Exception:
+            pass
+
+    def _auto_clear_error(self) -> None:
+        """Fired ~12s after a window-less pipeline error. Bail if a window opened
+        meanwhile (defer to the dismiss path) or the error was already cleared by
+        a new recording/pipeline; otherwise drop the sticky error and go idle."""
+        if self._error_active and not self._any_window_open():
+            self._error_active = False
+            self._emit_icon_state("idle")
+
     def _update_activation_policy(self) -> None:
         """Show app in Dock + Cmd-Tab when a window is open; hide when all closed."""
         if sys.platform != "darwin":
@@ -185,11 +234,7 @@ class WindowManager:
         try:
             import AppKit
             nsapp = AppKit.NSApplication.sharedApplication()
-            any_open = (
-                (self._workflow_win is not None and _win_alive(self._workflow_win._win))
-                or (self._history_win is not None and _win_alive(self._history_win._win))
-                or (self._settings_win is not None and _win_alive(self._settings_win._win))
-            )
+            any_open = self._any_window_open()
             policy = (
                 AppKit.NSApplicationActivationPolicyRegular
                 if any_open
@@ -244,6 +289,7 @@ class WindowManager:
         except queue.Empty:
             pass
         self._sweep_stale_window_refs()
+        self._clear_error_on_window_dismiss()
         self._update_activation_policy()
         if self._root.winfo_exists():
             self._root.after(100, self._pump)
@@ -280,20 +326,33 @@ class WindowManager:
         elif kind == "set_icon":
             _, state = item
             self._last_pipeline_active = state in {"recording", "processing"}
-            if self._on_icon_state is not None:
-                try:
-                    self._on_icon_state(state)
-                except Exception:
-                    log.debug("Error in on_icon_state callback", exc_info=True)
+            # A persistent error survives the pipeline worker's auto-idle in
+            # `finally`; only an explicit clear trigger may drop it.
+            if state == "idle" and self._error_active:
+                return
+            if state in {"recording", "processing"}:
+                self._error_active = False
+            elif state == "error":
+                self._error_active = True
+            self._emit_icon_state(state)
 
         elif kind == "error":
             _, component, message, tb = item
             notify(format_error(component, message, tb), "SummarizeAudio Error")
+            self._error_active = True
+            self._emit_icon_state("error")
             self._forward(item)
+            # No window to show this in -> no dismiss action will ever clear the
+            # sticky error. Schedule a time-based auto-revert. With a window open
+            # the error is shown in-window and clears on dismiss, so keep sticky.
+            if not self._any_window_open():
+                self._schedule_error_auto_clear()
 
         elif kind == "fatal_error":
             _, message, detail = item
             notify(format_error("fatal", message, detail), "SummarizeAudio — Fatal Error")
+            self._error_active = True
+            self._emit_icon_state("error")
             self._forward(item)
             self._root.after(500, self._root.quit)
 
@@ -306,6 +365,20 @@ class WindowManager:
                 self._workflow_win._handle_item(item)
             except Exception:
                 log.debug("Error forwarding queue item %r", item, exc_info=True)
+            return
+        # No live workflow window to show this. If the item carries a blocking
+        # resolver (the pipeline worker is parked on resolver.wait(300) for an
+        # override/name dialog), resolve it with None so the worker unblocks,
+        # runs its finally, and posts ("set_icon","idle") — stopping the
+        # processing pulse. Without this, closing the window before the dialog
+        # arrives drops the item and leaves the worker (and the animation)
+        # hanging until the 300s timeout.
+        if item and item[0] in {"override_dialog", "name_dialog"}:
+            resolver = item[1]
+            try:
+                resolver._resolve(None)
+            except Exception:
+                log.debug("Failed to resolve undeliverable %s", item[0], exc_info=True)
 
 
 def _win_alive(win: tk.Toplevel) -> bool:

@@ -127,6 +127,41 @@ def _load_icon(name: str) -> Image.Image:
     return img
 
 
+def _load_pulse_frames(prefix: str) -> list[Image.Image]:
+    """Load the sequential ``<prefix>_NN.png`` pulse frames in order."""
+    frames: list[Image.Image] = []
+    i = 0
+    while True:
+        path = ASSETS / f"{prefix}_{i:02d}.png"
+        if not path.exists():
+            break
+        frames.append(Image.open(path))
+        i += 1
+    return frames
+
+
+def _menu_bar_variant() -> str:
+    """Return ``"dark"`` or ``"light"`` to match the active menu-bar appearance.
+
+    Pulse frames are literal-color (non-template), so they can't auto-adapt the
+    way the idle template does. We pick the silhouette-base variant that matches
+    whatever the idle template would render as on the current bar: ``"dark"`` →
+    white silhouette (dark menu bar), ``"light"`` → near-black silhouette (light
+    menu bar). Defaults to ``"dark"`` off-darwin or if appearance can't be read.
+    """
+    if sys.platform != "darwin":
+        return "dark"
+    try:
+        import AppKit
+        nsapp = AppKit.NSApplication.sharedApplication()
+        match = nsapp.effectiveAppearance().bestMatchFromAppearancesWithNames_(
+            [AppKit.NSAppearanceNameAqua, AppKit.NSAppearanceNameDarkAqua]
+        )
+        return "light" if match == AppKit.NSAppearanceNameAqua else "dark"
+    except Exception:
+        return "dark"
+
+
 class TrayApp:
     def __init__(self) -> None:
         self._ui_queue: queue.Queue = queue.Queue()
@@ -144,8 +179,28 @@ class TrayApp:
             "idle":       _load_icon("icon_idle"),
             "recording":  _load_icon("icon_recording"),
             "processing": _load_icon("icon_processing"),
-            "error":      _load_icon("icon_error"),
+            "error":      _load_icon("pulse_error"),
         }
+        # Pre-rendered "rising sweep" pulse frames (literal-color, non-template).
+        # Nested by appearance variant so the silhouette base matches the idle
+        # template on either menu bar; the variant is chosen at pulse start.
+        self._pulse_frames: dict[str, dict[str, list[Image.Image]]] = {
+            "recording": {
+                "dark":  _load_pulse_frames("pulse_recording_dark"),
+                "light": _load_pulse_frames("pulse_recording_light"),
+            },
+            "processing": {
+                "dark":  _load_pulse_frames("pulse_processing_dark"),
+                "light": _load_pulse_frames("pulse_processing_light"),
+            },
+        }
+        self._icon_mode = "idle"
+        self._pulse_variant = "dark"
+        self._pulse_index = 0
+        self._pulse_after_id = None
+        self._pulse_interval_ms = 167  # 12 frames -> ~2s/loop
+        self._device_error_active = False
+        self._device_reprobe_interval_ms = 3000
         self._tray: pystray.Icon | None = None
 
         # WindowManager owns the Tk root and all visible windows.
@@ -172,19 +227,12 @@ class TrayApp:
         if self._window_manager.block_for_open_window():
             log.info("_on_start_recording: blocked because a window is open")
             return
-        start_report = check_input_health(self._cfg.recording.input_device)
-        log.info(
-            "pre-start input health: issue=%s device=%r active_channels=%s sampled_channels=%d",
-            start_report.issue,
-            start_report.device_name,
-            start_report.active_channels,
-            start_report.sampled_channels,
-        )
-        if self._should_stop_recording_for_input_health(start_report.issue):
-            if start_report.warning:
-                notify(start_report.warning, "Recording Input Problem")
-            return
-
+        # No synchronous pre-start health probe: check_input_health samples the
+        # device for ~1.5s, which stalled both recording start and the icon
+        # animation. The async post-start check (_run_recording_input_health_check
+        # → _handle_recording_input_health) is authoritative — it stops the
+        # recorder, deletes the wav, reverts the icon, and notifies if the device
+        # turns out bad. Start immediately and let it validate in the background.
         recorder = Recorder(self._cfg.storage.output_folder, self._cfg.recording.input_device)
         try:
             recorder.start()
@@ -196,7 +244,12 @@ class TrayApp:
             )
             return
         self._recorder = recorder
-        self._set_icon("recording")
+        self._device_error_active = False  # a clean start clears any prior error
+        # Route through the UI queue so WindowManager (owner of the persistent
+        # pipeline-error flag) clears `_error_active` on the main thread before
+        # emitting the recording icon. A direct `_set_icon` here would leave a
+        # prior pipeline error armed, suppressing the subsequent idle.
+        self._ui_queue.put(("set_icon", "recording"))
         self._rebuild_menu()
         self._run_recording_input_health_check(recorder)
 
@@ -258,6 +311,8 @@ class TrayApp:
                     self._handle_startup_input_health(report)
                 elif kind == "recording":
                     self._handle_recording_input_health(recorder, report)
+                elif kind == "reprobe":
+                    self._handle_reprobe_input_health(report)
         except queue.Empty:
             pass
 
@@ -277,19 +332,82 @@ class TrayApp:
 
         recorder.cleanup(delete_wav=True)
         self._recorder = None
-        self._set_icon("idle")
-        self._rebuild_menu()
         if report.warning:
             notify(report.warning, "Recording Input Problem")
+        # Mirror the startup path: an alert-worthy device fault (channel_mapping,
+        # device_missing, …) must enter the sticky device-error state with its
+        # reprobe recovery loop so the icon reflects reality and self-clears when
+        # the device returns. A non-alert stop reason (e.g. no_frames) just reverts
+        # to idle. A bare _set_icon("idle") here would both hide the fault and skip
+        # the recovery probe.
+        if self._should_alert_input_health(report.issue):
+            self._enter_device_error()
+        else:
+            self._device_error_active = False
+            self._set_icon("idle")
+            self._rebuild_menu()
 
     def _handle_startup_input_health(self, report) -> None:
         if self._recorder is not None and self._should_stop_recording_for_input_health(report.issue):
             self._handle_recording_input_health(self._recorder, report)
             return
-        if self._should_alert_input_health(report.issue) and report.warning:
-            notify(report.warning, "Recording Input Problem")
+        if self._should_alert_input_health(report.issue):
+            if report.warning:
+                notify(report.warning, "Recording Input Problem")
+            self._enter_device_error()
+        else:
+            self._clear_device_error_if_active()
+
+    def _handle_reprobe_input_health(self, report) -> None:
+        """Recovery loop result: clear the error on a healthy probe, else keep
+        watching."""
+        if not self._device_error_active:
+            return
+        if self._should_alert_input_health(report.issue):
+            self._schedule_device_error_reprobe()
+        else:
+            self._clear_device_error_if_active()
+
+    def _enter_device_error(self) -> None:
+        self._device_error_active = True
+        self._set_icon("error")
+        self._rebuild_menu()
+        self._schedule_device_error_reprobe()
+
+    def _clear_device_error_if_active(self) -> None:
+        if not self._device_error_active:
+            return
+        self._device_error_active = False
+        self._set_icon("idle")
+        self._rebuild_menu()
+
+    def _schedule_device_error_reprobe(self) -> None:
+        if not self._device_error_active or self._stop_event.is_set():
+            return
+        try:
+            self._window_manager.root.after(
+                self._device_reprobe_interval_ms, self._fire_device_error_reprobe
+            )
+        except Exception:
+            pass
+
+    def _fire_device_error_reprobe(self) -> None:
+        if not self._device_error_active or self._stop_event.is_set():
+            return
+
+        def _worker() -> None:
+            report = check_input_health(self._cfg.recording.input_device)
+            self._input_health_queue.put(("reprobe", report, None))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_stop_recording(self, icon, item) -> None:
+        # Runs on the pystray callback thread. A recording-state pulse loop is
+        # mutating the NSStatusItem image from the Tk main thread, so we must
+        # NOT touch the icon (or menu) here — concurrent NSStatusItem access
+        # from two threads deadlocks AppKit. Route the idle switch through the
+        # UI queue; WindowManager pumps it on the main thread, which also
+        # rebuilds the menu via `_on_icon_state`.
         recorder = self._recorder
         if recorder is None:
             return
@@ -302,13 +420,11 @@ class TrayApp:
                 format_error("tray.py → recorder", str(exc), traceback.format_exc()),
                 "SummarizeAudio Error",
             )
-            self._set_icon("idle")
-            self._rebuild_menu()
+            self._ui_queue.put(("set_icon", "idle"))
             return
 
         self._recorder = None
-        self._set_icon("idle")
-        self._rebuild_menu()
+        self._ui_queue.put(("set_icon", "idle"))
         self._ui_queue.put(("show_workflow", "record", mp3_path, None))
 
     def _on_local_audio(self, icon, item) -> None:
@@ -433,10 +549,52 @@ class TrayApp:
     # ── Icon and menu helpers ─────────────────────────────────────────────────
 
     def _set_icon(self, state: str) -> None:
+        if state in self._pulse_frames:
+            self._start_pulse(state)
+        else:
+            self._set_static(state)
+
+    def _start_pulse(self, mode: str) -> None:
+        """Begin the rising-sweep loop for ``recording``/``processing``."""
+        self._cancel_pulse()
+        self._icon_mode = mode
+        self._pulse_variant = _menu_bar_variant()
+        self._pulse_index = 0
+        if self._tray and sys.platform == "darwin":
+            setattr(self._tray, "_summarizeaudio_template_icon", False)
+        self._advance_pulse()
+
+    def _advance_pulse(self) -> None:
+        """Show the current frame, bump the index (sawtooth wrap), reschedule."""
+        variants = self._pulse_frames.get(self._icon_mode)
+        if not variants:
+            return
+        frames = variants.get(self._pulse_variant) or next(iter(variants.values()), [])
+        if not frames:
+            return
+        if self._tray:
+            self._tray.icon = frames[self._pulse_index]
+        self._pulse_index = (self._pulse_index + 1) % len(frames)
+        self._pulse_after_id = self._window_manager.root.after(
+            self._pulse_interval_ms, self._advance_pulse
+        )
+
+    def _set_static(self, state: str) -> None:
+        """Cancel any pulse loop and set a static idle/error icon."""
+        self._cancel_pulse()
+        self._icon_mode = state
         if self._tray:
             if sys.platform == "darwin":
                 setattr(self._tray, "_summarizeaudio_template_icon", state == "idle")
             self._tray.icon = self._icons.get(state, self._icons["idle"])
+
+    def _cancel_pulse(self) -> None:
+        if self._pulse_after_id is not None:
+            try:
+                self._window_manager.root.after_cancel(self._pulse_after_id)
+            except Exception:
+                pass
+            self._pulse_after_id = None
 
     def _rebuild_menu(self) -> None:
         if self._tray is None:

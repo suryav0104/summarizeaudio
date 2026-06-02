@@ -4,6 +4,8 @@ import queue as queue_mod
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from summarizeaudio import sessions as session_store
 from summarizeaudio import workflow_window
 from summarizeaudio.config import (
@@ -532,6 +534,30 @@ def test_workflow_window_summary_layout_uses_path_when_session_lookup_fails(tmp_
     assert FakeText.instances[-1].content == "summary content"
 
 
+def test_close_during_pending_resolver_unblocks_worker(tmp_path, monkeypatch):
+    """Closing the window while a dialog resolver is pending must resolve it
+    with None so the blocked pipeline worker wakes, runs its `finally`, and
+    emits ("set_icon","idle"). Otherwise the worker stays blocked on
+    resolver.wait(300) and the processing pulse never stops."""
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
+    window._render = lambda: None
+
+    resolved = []
+    window._resolver = SimpleNamespace(_resolve=lambda value: resolved.append(value))
+
+    window._close()
+
+    assert resolved == [None]
+    assert window._resolver is None
+    assert fake_root.destroyed is True
+
+
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
@@ -884,3 +910,73 @@ def test_workflow_window_has_compact_geometry(tmp_path, monkeypatch):
     assert window._window_width == 560
     assert window._window_height == 520
     assert fake_root.geometry_value == "560x520"
+
+
+class _SyncThread:
+    def __init__(self, target=None, daemon=False):
+        self._target = target
+
+    def start(self):
+        if self._target is not None:
+            self._target()
+
+
+def test_start_pipeline_brackets_run_with_processing_then_idle(tmp_path, monkeypatch):
+    order: list[str] = []
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.Pipeline",
+        lambda cfg, ui_queue: SimpleNamespace(run=lambda *a, **k: order.append("run")),
+    )
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.threading.Thread", _SyncThread)
+
+    q = queue_mod.Queue()
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), q, "audio")
+    window._start_step_timer = lambda *a, **k: None
+    window._active_source = Path("/tmp/example.mp3")
+
+    window._start_pipeline()
+
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+
+    assert ("set_icon", "processing") in items
+    assert ("set_icon", "idle") in items
+    assert order == ["run"]
+    assert items.index(("set_icon", "processing")) < items.index(("set_icon", "idle"))
+
+
+def test_start_pipeline_sets_idle_icon_even_when_run_raises(tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("pipeline blew up")
+
+    monkeypatch.setattr(
+        "summarizeaudio.workflow_window.Pipeline",
+        lambda cfg, ui_queue: SimpleNamespace(run=_boom),
+    )
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.threading.Thread", _SyncThread)
+
+    q = queue_mod.Queue()
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), q, "audio")
+    window._start_step_timer = lambda *a, **k: None
+    window._active_source = Path("/tmp/example.mp3")
+
+    # In production the worker runs on a daemon thread that swallows the
+    # exception; the synchronous test harness re-raises it. Either way the
+    # finally clause must have enqueued the idle icon first.
+    with pytest.raises(RuntimeError):
+        window._start_pipeline()
+
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+
+    assert ("set_icon", "idle") in items

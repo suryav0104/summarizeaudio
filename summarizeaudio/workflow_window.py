@@ -478,15 +478,15 @@ class WorkflowWindow:
             btn_bg   = self._button_accent_bg
             btn_fg   = self._button_accent_fg
             hover_bg = "#2d3548"
-            outer = tk.Frame(parent, bg=btn_bg, cursor="hand2")
+            outer = tk.Frame(parent, bg=btn_bg)
             container = outer
         else:
             btn_bg   = self._button_secondary_bg
             btn_fg   = self._button_secondary_fg
             hover_bg = "#dde4ef"
             # 1-px border via a slightly darker outer frame.
-            outer = tk.Frame(parent, bg=self._button_border, cursor="hand2")
-            container = tk.Frame(outer, bg=btn_bg, cursor="hand2")
+            outer = tk.Frame(parent, bg=self._button_border)
+            container = tk.Frame(outer, bg=btn_bg)
             container.pack(padx=1, pady=1)
 
         label = tk.Label(
@@ -497,7 +497,6 @@ class WorkflowWindow:
             font=self._button_font,
             padx=16,
             pady=8,
-            cursor="hand2",
         )
         label.pack()
 
@@ -1011,30 +1010,34 @@ class WorkflowWindow:
         self._start_step_timer("processing")
 
         def run() -> None:
-            if self._mode == "record":
-                assert self._active_source is not None
-                self._pipeline.run(
-                    PipelineMode.RECORD,
-                    "recording",
-                    mp3_path=self._active_source,
-                    resume_session_id=self._resume_session_id,
-                )
-            elif self._mode == "audio":
-                assert self._active_source is not None
-                self._pipeline.run(
-                    PipelineMode.LOCAL_AUDIO,
-                    "audio",
-                    source_path=self._active_source,
-                    resume_session_id=self._resume_session_id,
-                )
-            else:
-                assert self._active_source is not None
-                self._pipeline.run(
-                    PipelineMode.LOCAL_TEXT,
-                    "text",
-                    source_path=self._active_source,
-                    resume_session_id=self._resume_session_id,
-                )
+            self._ui_queue.put(("set_icon", "processing"))
+            try:
+                if self._mode == "record":
+                    assert self._active_source is not None
+                    self._pipeline.run(
+                        PipelineMode.RECORD,
+                        "recording",
+                        mp3_path=self._active_source,
+                        resume_session_id=self._resume_session_id,
+                    )
+                elif self._mode == "audio":
+                    assert self._active_source is not None
+                    self._pipeline.run(
+                        PipelineMode.LOCAL_AUDIO,
+                        "audio",
+                        source_path=self._active_source,
+                        resume_session_id=self._resume_session_id,
+                    )
+                else:
+                    assert self._active_source is not None
+                    self._pipeline.run(
+                        PipelineMode.LOCAL_TEXT,
+                        "text",
+                        source_path=self._active_source,
+                        resume_session_id=self._resume_session_id,
+                    )
+            finally:
+                self._ui_queue.put(("set_icon", "idle"))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1206,6 +1209,15 @@ class WorkflowWindow:
         return result
 
     def _close(self) -> None:
+        # If a dialog resolver is pending, the pipeline worker thread is blocked
+        # on resolver.wait(300). Resolve it with None (the cancel value, handled
+        # by both _OverrideEvent and _NameEvent) so the worker wakes and runs its
+        # `finally`, which posts ("set_icon","idle") to stop the processing pulse.
+        # Without this, closing the window leaves the worker blocked and the icon
+        # animating until the 300s timeout.
+        if self._resolver is not None:
+            self._resolver._resolve(None)
+            self._resolver = None
         self._stop_progress()
         self._cancel_elapsed_tick()
         try:

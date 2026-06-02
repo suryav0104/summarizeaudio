@@ -166,14 +166,14 @@ class SettingsWindow:
             btn_bg = self._button_accent_bg
             btn_fg = self._button_accent_fg
             hover_bg = "#2d3548"
-            outer = tk.Frame(parent, bg=btn_bg, cursor="hand2")
+            outer = tk.Frame(parent, bg=btn_bg)
             container = outer
         else:
             btn_bg = self._button_secondary_bg
             btn_fg = self._button_secondary_fg
             hover_bg = "#dde4ef"
-            outer = tk.Frame(parent, bg=self._button_border, cursor="hand2")
-            container = tk.Frame(outer, bg=btn_bg, cursor="hand2")
+            outer = tk.Frame(parent, bg=self._button_border)
+            container = tk.Frame(outer, bg=btn_bg)
             container.pack(padx=1, pady=1)
 
         label = tk.Label(
@@ -184,7 +184,6 @@ class SettingsWindow:
             font=self._button_font,
             padx=16,
             pady=8,
-            cursor="hand2",
         )
         label.pack()
 
@@ -233,7 +232,6 @@ class SettingsWindow:
                 label.configure(bg="#cbd2dc", fg="#8b94a3")
             except Exception:
                 pass
-        outer.configure(cursor="")
 
     # ── Pure value computation (no widget side-effects) ─────────────────────
     def _compute_input_devices(self) -> tuple[list[str], str]:
