@@ -427,7 +427,7 @@ def test_workflow_window_progress_bar_is_dark_and_slower(tmp_path, monkeypatch):
     assert canvas.kwargs["width"] == 480
     assert canvas.after_calls
     assert canvas.after_calls[-1][0] == 16
-    assert window._progress._track_color == "#e7ebf2"
+    assert window._progress._track_color == "#ccd4e0"
     assert window._progress._bar_color == "#222222"
     assert window._progress._interval == 16
     assert window._progress._step == 4
@@ -558,6 +558,53 @@ def test_close_during_pending_resolver_unblocks_worker(tmp_path, monkeypatch):
     assert resolved == [None]
     assert window._resolver is None
     assert fake_root.destroyed is True
+
+
+def test_close_during_active_processing_stops_pulse(tmp_path, monkeypatch):
+    """Closing the window while the pipeline is mid-run (no dialog resolver
+    pending, e.g. partway through transcription) must post ('set_icon','idle')
+    so the processing pulse stops immediately, instead of running until the
+    pipeline finishes on its own."""
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+
+    q = queue_mod.Queue()
+    window = workflow_window.WorkflowWindow(SimpleNamespace(), make_config(tmp_path), q, "record", source=Path("/tmp/recording.mp3"))
+    window._render = lambda: None
+    window._processing_started = True
+    window._resolver = None
+
+    window._close()
+
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert ("set_icon", "idle") in items
+    assert fake_root.destroyed is True
+
+
+def test_determinate_fill_width_is_proportional_from_zero():
+    """The transcribe progress fill must reflect the percentage from 0 with no
+    fat minimum-width clamp, so the gray track is dominant at the start and the
+    fill grows smoothly (the 0-7% 'stuck blob' bug)."""
+    from summarizeaudio.workflow_window import _determinate_fill_width
+    assert _determinate_fill_width(480, 0) == 0
+    assert _determinate_fill_width(480, 100) == 480
+    assert _determinate_fill_width(480, 50) == 240
+    # A low percentage must produce a small fill, never a ~32px clamp.
+    assert _determinate_fill_width(480, 2) <= 12
+
+
+def test_determinate_label_color_contrasts_with_fill():
+    """The percent label must never read as the same color as the dark fill.
+    On the gray track (fill hasn't reached the label) it is a readable slate;
+    once the fill covers the label center it flips to white."""
+    from summarizeaudio.workflow_window import _determinate_label_color
+    assert _determinate_label_color(filled=20, width=480) == "#475569"
+    assert _determinate_label_color(filled=300, width=480) == "white"
 
 
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):

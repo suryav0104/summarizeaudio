@@ -21,6 +21,21 @@ from summarizeaudio.chooser_window import _native_audio_picker, _native_text_pic
 from summarizeaudio.sessions import session_by_id, session_for_summary_path
 
 
+def _determinate_fill_width(track_width: int, pct: float) -> int:
+    """Dark-fill width for a determinate bar, proportional to pct with no
+    minimum clamp, so the fill grows honestly from 0 and the gray track is the
+    dominant element at the start."""
+    pct = max(0.0, min(100.0, pct))
+    return int(round(track_width * pct / 100.0))
+
+
+def _determinate_label_color(filled: int, width: int) -> str:
+    """Percent-label color. Slate while the label sits on the gray track (so it
+    never matches the near-black fill), white once the fill covers the label
+    center."""
+    return "white" if filled >= width / 2 else "#475569"
+
+
 class _MarqueeProgress:
     def __init__(
         self,
@@ -28,7 +43,7 @@ class _MarqueeProgress:
         *,
         width: int,
         height: int = 16,
-        track_color: str = "#e7ebf2",
+        track_color: str = "#ccd4e0",
         bar_color: str = "#222222",
         mode: str = "marquee",
         bar_ratio: float = 0.294,
@@ -49,7 +64,6 @@ class _MarqueeProgress:
         self._base_width = width
         self._bar_ratio = bar_ratio
         self._bar_width = max(30, int(width * bar_ratio))
-        self._radius = max(4, height // 2)
         self._bar_x = 0.0
         self._track_items: list[int] = []
         self._bar_items: list[int] = []
@@ -74,12 +88,16 @@ class _MarqueeProgress:
         if not self._canvas.winfo_exists():
             return
         width = max(self._canvas.winfo_width(), self._base_width)
-        filled = max(int(2 * self._radius), int(width * self._pct / 100))
+        filled = _determinate_fill_width(width, self._pct)
         self._set_capsule(self._track_items, 0, 2, width, self._height - 2, self._track_color)
         self._set_capsule(self._bar_items, 0, 2, filled, self._height - 2, self._bar_color)
         if self._text_item is not None:
-            self._canvas.itemconfigure(self._text_item, text=f"{int(self._pct)}%")
-            self._canvas.coords(self._text_item, filled / 2, self._height / 2)
+            self._canvas.itemconfigure(
+                self._text_item,
+                text=f"{int(self._pct)}%",
+                fill=_determinate_label_color(filled, width),
+            )
+            self._canvas.coords(self._text_item, width / 2, self._height / 2)
 
     def start(self) -> None:
         if self._mode != "marquee":
@@ -114,14 +132,17 @@ class _MarqueeProgress:
         self._draw()
 
     def _capsule(self, x1: float, y1: float, x2: float, y2: float, color: str) -> list[int]:
-        radius = max(1.0, (y2 - y1) / 2.0)
+        # Cap the corner radius by half the width so a narrow shape (a low-percent
+        # fill) stays a thin pill instead of ballooning into a fixed ~height-wide
+        # blob. Full-width shapes (the track) keep the normal height-based radius.
+        radius = max(1.0, min((y2 - y1) / 2.0, (x2 - x1) / 2.0))
         rect = self._canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=color, outline="")
         left = self._canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=color, outline="")
         right = self._canvas.create_oval(x2 - radius * 2, y1, x2, y2, fill=color, outline="")
         return [rect, left, right]
 
     def _set_capsule(self, items: list[int], x1: float, y1: float, x2: float, y2: float, color: str) -> None:
-        radius = max(1.0, (y2 - y1) / 2.0)
+        radius = max(1.0, min((y2 - y1) / 2.0, (x2 - x1) / 2.0))
         self._canvas.coords(items[0], x1 + radius, y1, x2 - radius, y2)
         self._canvas.coords(items[1], x1, y1, x1 + radius * 2, y2)
         self._canvas.coords(items[2], x2 - radius * 2, y1, x2, y2)
@@ -135,12 +156,12 @@ class _MarqueeProgress:
         width = max(self._canvas.winfo_width(), self._base_width)
         self._track_items = self._capsule(0, 2, width, self._height - 2, self._track_color)
         if self._mode == "determinate":
-            filled = max(int(2 * self._radius), int(width * self._pct / 100))
+            filled = _determinate_fill_width(width, self._pct)
             self._bar_items = self._capsule(0, 2, filled, self._height - 2, self._bar_color)
             self._text_item = self._canvas.create_text(
-                filled / 2, self._height / 2,
+                width / 2, self._height / 2,
                 text=f"{int(self._pct)}%",
-                fill="white",
+                fill=_determinate_label_color(filled, width),
                 font=("Helvetica Neue", 9, "bold"),
             )
         else:
@@ -1219,6 +1240,12 @@ class WorkflowWindow:
         if self._resolver is not None:
             self._resolver._resolve(None)
             self._resolver = None
+        # The processing pulse is tied to the pipeline worker's lifecycle (it
+        # posts idle only in its `finally`, after the whole run completes).
+        # Closing mid-run — e.g. partway through transcription — must stop the
+        # animation now rather than letting it run until the pipeline finishes.
+        if self._processing_started:
+            self._ui_queue.put(("set_icon", "idle"))
         self._stop_progress()
         self._cancel_elapsed_tick()
         try:
