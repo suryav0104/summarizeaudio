@@ -12,6 +12,13 @@ In `SettingsWindow._build`, the original ordering called `_populate_input_device
 ### `ttk.Combobox.configure(state="disabled")` does not block programmatic `.set()`
 Disabled combos still accept `.set()` calls. Tests that mutate state must read `str(combo["state"])` to assert disablement, not rely on `.set()` raising. Same applies to button `state` — `_on_apply` must explicitly bail when `_apply_btn["state"] == "disabled"` because the keyboard-bound `<Return>` handler can still fire while the button is disabled.
 
+### Combobox arrow-key bindings are platform-forked; on macOS Aqua the arrows do NOT cycle the value
+Tk's `TCombobox` class bindings differ by platform. On X11/Windows `<Down>` runs `ttk::combobox::Scroll` (steps the value by one) and `<Up>` mirrors it. On **Aqua (macOS)** `<Down>` is bound to `ttk::combobox::Post` (open the native popdown menu) and `<Up>` is bound to nothing. Result on macOS: a focused readonly combobox never cycled its value with the arrows — the user saw a "press Down twice to change" feel and a dead Up key. `.set()` vs `.current()` is a red herring here: `.current()` already returns the right index after `.set()` because it string-matches the displayed value against the values list; the arrow simply never invoked any stepping routine.
+
+Fix (`SettingsWindow._bind_arrow_stepping` / `_step_combo`): bind `<Down>`/`<Up>` on each readonly combo to step `current()` by +/-1, clamped to `[0, len-1]` (no wraparound, matching native `Scroll`), then `return "break"` to suppress the default Aqua menu-post. Mirror `ttk::combobox::SelectEntry`: `combo.current(new)`, `combo.selection_range(0, "end")`, `combo.event_generate("<<ComboboxSelected>>")`. Guard `current() < 0` (no selection yet) as index 0 so the first press is never wasted, and no-op when `str(combo["state"]) == "disabled"`. Confirm the Aqua fork by inspecting `bind TCombobox <Down>` at runtime — the body referencing `AquaPlacePopdown`/`ConfigureAquaMenu` is the macOS variant.
+
+`event_generate("<Down>")` does NOT reliably fire class bindings headless (no real focus/WM), so don't test the binding via synthetic key events. Test the pure stepping method (`_step_combo`) directly instead.
+
 ---
 
 ## pystray + Tk threading

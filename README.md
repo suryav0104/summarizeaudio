@@ -164,7 +164,7 @@ The `SUMMARIZEAUDIO_DIARIZATION=1` installer scaffolds this file with the token 
 
 ### 4. Enable it in the app
 
-Open **Settings** from the tray (or click the `Diarization → …` status item). When the capability is in place, you'll see a **Label speakers in transcripts** toggle — turn it on and click **Apply**. When pyannote or the token is still missing, the row shows **Unavailable** with a **How to enable** link that expands the same step-by-step instructions shown here, plus a **Re-check** button that re-reads `.env` so you don't have to relaunch after pasting a token.
+Open **Settings** from the tray (or click the `Diarization → …` status item). The row is headed **Speaker Diarization (Label speakers in transcripts)**. When the capability is in place, you'll see an **On / Off** dropdown — set it to **On** and click **Apply**. When pyannote or the token is still missing, the same row shows **Unavailable** with a **How to enable** link that expands the same step-by-step instructions shown here, plus a **Re-check** button that re-reads `.env` so you don't have to relaunch after pasting a token.
 
 ### Notes
 
