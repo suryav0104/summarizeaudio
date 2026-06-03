@@ -89,6 +89,10 @@ class FakeWidget:
 
     config = configure
 
+    def bind(self, sequence, func):
+        self.binds = getattr(self, "binds", {})
+        self.binds[sequence] = func
+
 
 class FakeButton(FakeWidget):
     pass
@@ -167,7 +171,56 @@ def test_alert_window_renders_error_and_details_as_separate_left_aligned_message
     assert primary.kwargs.get("anchor") == "w"
 
     assert any(widget.kwargs.get("text") == "Component: tray.py -> recorder" for widget in FakeWidget.instances)
+    # The log path is now split out into its own clickable link label rather
+    # than baked into the sentence text.
     assert any(
-        widget.kwargs.get("text") == "Technical details were saved to /Users/surya/.summarizeaudio/app.log."
+        widget.kwargs.get("text") == "/Users/surya/.summarizeaudio/app.log"
         for widget in FakeWidget.instances
     )
+    assert any(
+        widget.kwargs.get("text") == "Technical details were saved to "
+        for widget in FakeWidget.instances
+    )
+
+
+def test_split_log_path_extracts_path():
+    result = alert_window._split_log_path(
+        "Technical details were saved to /Users/surya/.summarizeaudio/app.log.",
+        "/Users/surya/.summarizeaudio/app.log",
+    )
+    assert result == (
+        "Technical details were saved to ",
+        "/Users/surya/.summarizeaudio/app.log",
+        ".",
+    )
+
+
+def test_split_log_path_returns_none_when_absent():
+    assert alert_window._split_log_path("no path in here", "/x/app.log") is None
+
+
+def test_alert_window_renders_log_path_as_clickable_link(monkeypatch):
+    _install_fake_tk(monkeypatch)
+    opened = []
+    monkeypatch.setattr(alert_window, "_open_path", lambda p: opened.append(p))
+    log_path = str(alert_window.LOG_PATH)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        StringIO(
+            "Component: summarizer.py\n\n"
+            "Ollama timed out while generating the summary.\n\n"
+            f"Technical details were saved to {log_path}."
+        ),
+    )
+    FakeWidget.instances.clear()
+
+    assert alert_window.main(["--title", "SummarizeAudio Error"]) == 0
+
+    link = next(w for w in FakeWidget.instances if w.kwargs.get("text") == log_path)
+    assert link.kwargs.get("fg") == "#2563eb"
+    assert "underline" in link.kwargs.get("font", ())
+    assert link.kwargs.get("cursor")
+    # Clicking the link opens the log file.
+    link.binds["<Button-1>"](None)
+    assert opened == [log_path]

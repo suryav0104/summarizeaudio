@@ -1,7 +1,34 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+
+from summarizeaudio.error_handler import LOG_PATH
+
+
+def _split_log_path(text: str, log_path: str) -> tuple[str, str, str] | None:
+    """Locate the log path inside a paragraph so it can be rendered as a
+    clickable link. Returns (before, path, after) or None if not present."""
+    idx = text.find(log_path)
+    if idx == -1:
+        return None
+    return text[:idx], log_path, text[idx + len(log_path):]
+
+
+def _open_path(path: str) -> None:
+    """Open a file with the OS default handler (the log opens in Console/an
+    editor). Failures are swallowed — the alert window must never crash."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", path], check=False)
+        elif sys.platform.startswith("win"):
+            import os
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", path], check=False)
+    except Exception:
+        pass
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -85,15 +112,41 @@ def main(argv: list[str] | None = None) -> int:
     ).pack(anchor="w", fill="x")
 
     if supporting_message:
+        log_path_str = str(LOG_PATH)
         for index, paragraph in enumerate(supporting_message.split("\n\n")):
-            ttk.Label(
-                body,
-                text=paragraph,
-                style="AlertDetail.TLabel",
-                wraplength=680,
-                justify="left",
-                anchor="w",
-            ).pack(anchor="w", fill="x", pady=(12 if index == 0 else 8, 0))
+            pady = (12 if index == 0 else 8, 0)
+            split = _split_log_path(paragraph, log_path_str)
+            if split is None:
+                ttk.Label(
+                    body,
+                    text=paragraph,
+                    style="AlertDetail.TLabel",
+                    wraplength=680,
+                    justify="left",
+                    anchor="w",
+                ).pack(anchor="w", fill="x", pady=pady)
+                continue
+
+            before, path, after = split
+            row = tk.Frame(body, bg="white")
+            row.pack(anchor="w", fill="x", pady=pady)
+            if before:
+                tk.Label(
+                    row, text=before, bg="white", fg="#60708a",
+                    font=("Helvetica Neue", 11), anchor="w",
+                ).pack(side="left")
+            link = tk.Label(
+                row, text=path, bg="white", fg="#2563eb",
+                font=("Helvetica Neue", 11, "underline"),
+                cursor="pointinghand", anchor="w",
+            )
+            link.pack(side="left")
+            link.bind("<Button-1>", lambda _e, p=path: _open_path(p))
+            if after:
+                tk.Label(
+                    row, text=after, bg="white", fg="#60708a",
+                    font=("Helvetica Neue", 11), anchor="w",
+                ).pack(side="left")
 
     def close() -> None:
         try:
