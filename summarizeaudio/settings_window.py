@@ -150,6 +150,7 @@ class SettingsWindow:
         self._input_combo["values"] = input_values
         self._input_combo.set(input_initial)
         self._input_combo.pack(anchor="w", pady=(4, 14))
+        self._bind_arrow_stepping(self._input_combo)
 
         # Summarization Model
         ttk.Label(body, text="Summarization Model", style="Step.TLabel").pack(anchor="w")
@@ -162,6 +163,7 @@ class SettingsWindow:
         else:
             self._model_combo["values"] = model_values
             self._model_combo.set(model_initial)
+            self._bind_arrow_stepping(self._model_combo)
         self._model_combo.pack(anchor="w", pady=(4, 14))
 
         # Speaker Diarization
@@ -298,6 +300,7 @@ class SettingsWindow:
             )
             self._diar_combo.set("On" if self._cfg.diarization.enabled else "Off")
             self._diar_combo.pack(anchor="w", pady=(4, 0))
+            self._bind_arrow_stepping(self._diar_combo)
             self._diar_focus_widget = self._diar_combo
             self._resize_for_steps(False)
             return
@@ -431,6 +434,37 @@ class SettingsWindow:
         self._win.deiconify()
         self._focus()
         self._apply_focus_target()
+
+    def _bind_arrow_stepping(self, combo: ttk.Combobox) -> None:
+        """Make Up/Down cycle the value by one in a single press.
+
+        On macOS Aqua, Tk binds <Down> to 'post the popdown menu' and leaves
+        <Up> dead, so the arrows never step the value. We override both to step
+        directly and return "break" to suppress the default menu-post.
+        """
+        combo.bind("<Down>", lambda _e: self._step_combo(combo, 1))
+        combo.bind("<Up>", lambda _e: self._step_combo(combo, -1))
+
+    def _step_combo(self, combo: ttk.Combobox, delta: int) -> str:
+        """Move the combo selection by delta, clamped to the value range.
+
+        Mirrors ttk::combobox::SelectEntry: set current, select the text, and
+        fire <<ComboboxSelected>>. Returns "break" to stop the default binding.
+        """
+        if str(combo["state"]) == "disabled":
+            return "break"
+        count = len(combo["values"])
+        if count == 0:
+            return "break"
+        current = combo.current()
+        if current < 0:
+            current = 0
+        new = max(0, min(count - 1, current + delta))
+        if new != combo.current():
+            combo.current(new)
+            combo.selection_range(0, "end")
+            combo.event_generate("<<ComboboxSelected>>")
+        return "break"
 
     def _apply_focus_target(self) -> None:
         target = self._focus_target

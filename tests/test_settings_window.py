@@ -434,3 +434,48 @@ def test_diarization_heading_has_light_purpose_caption_when_unavailable(root, tm
         texts = _diar_label_texts(win)
         assert "Speaker Diarization" in texts
         assert any("(Label speakers in transcripts)" in t for t in texts)
+
+
+def test_step_combo_advances_one_per_press_and_clamps(root, tmp_path, monkeypatch):
+    """One <Down> moves to the next value; one <Up> moves back. The step clamps
+    at both ends (no wraparound), matching native ttk Scroll behavior. This is
+    the macOS fix: Aqua binds <Down> to 'post menu', so values never cycled."""
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        combo = win._input_combo
+        last = len(combo["values"]) - 1
+        assert last >= 2  # autodetect + 2 fake devices
+
+        combo.current(0)
+        win._step_combo(combo, 1)
+        assert combo.current() == 1
+        win._step_combo(combo, 1)
+        assert combo.current() == 2
+        win._step_combo(combo, -1)
+        assert combo.current() == 1
+
+        # Clamp at the top.
+        combo.current(0)
+        win._step_combo(combo, -1)
+        assert combo.current() == 0
+        # Clamp at the bottom.
+        combo.current(last)
+        win._step_combo(combo, 1)
+        assert combo.current() == last
+
+
+def test_step_combo_noop_on_disabled(root, tmp_path):
+    """A disabled combo (Ollama down) must not move on arrow stepping."""
+    from summarizeaudio.settings_window import SettingsWindow
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=None), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        combo = win._model_combo
+        before = combo.get()
+        win._step_combo(combo, 1)
+        assert combo.get() == before
