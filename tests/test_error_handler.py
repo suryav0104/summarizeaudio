@@ -43,6 +43,20 @@ def test_format_error_preserves_no_usable_audio_message():
     assert "Something went wrong" not in rendered
 
 
+def test_friendly_message_maps_ollama_read_timeout():
+    msg = friendly_message(
+        "summarizer.py → ollama",
+        "HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=120)",
+        "requests.exceptions.ReadTimeout: HTTPConnectionPool(host='localhost', "
+        "port=11434): Read timed out. (read timeout=120)",
+    )
+    assert "took too long" in msg
+    assert "Something went wrong" not in msg
+    # A read timeout means Ollama IS reachable; it must not be classified as
+    # the "server is not reachable" case.
+    assert "not reachable" not in msg
+
+
 def test_format_error_preserves_configured_recording_device_message():
     rendered = format_error(
         "tray.py → recorder",

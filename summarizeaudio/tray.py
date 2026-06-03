@@ -19,6 +19,7 @@ from summarizeaudio import diarization
 from summarizeaudio.config import load_config
 from summarizeaudio.error_handler import format_error
 from summarizeaudio.notifier import notify
+from summarizeaudio.ollama_client import prewarm_async
 from summarizeaudio.recorder import Recorder, check_input_health, resolve_auto_input_device_name
 
 if TYPE_CHECKING:
@@ -425,6 +426,10 @@ class TrayApp:
             return
 
         self._recorder = None
+        # Start loading the Ollama model now (fire-and-forget) so it is warm by
+        # the time transcription finishes and summarization begins — avoids a
+        # cold-load read timeout on the first real request.
+        prewarm_async(self._cfg.ollama.host, self._cfg.ollama.model)
         self._ui_queue.put(("set_icon", "idle"))
         self._ui_queue.put(("show_workflow", "record", mp3_path, None))
 

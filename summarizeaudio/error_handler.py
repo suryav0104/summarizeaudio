@@ -45,6 +45,12 @@ def friendly_message(component: str, message: str, traceback_str: str = "") -> s
             "then try again."
         )
 
+    if "read timed out" in text or "readtimeout" in text:
+        return (
+            "Ollama took too long to respond. This usually happens the first time a "
+            "model runs and has to load into memory. Wait a moment and try again."
+        )
+
     if "ollama" in text and (
         ("model" in text and "not found" in text)
         or "404" in text

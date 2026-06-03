@@ -285,6 +285,49 @@ def test_mode2_copy_timeout_posts_cloud_sync_message(tmp_output, ui_queue, monke
     assert "cloud-synced location" in item[2].lower()
 
 
+def test_mode3_prewarms_ollama_model_before_summarizing(tmp_output, ui_queue, monkeypatch):
+    """Text-only mode has no transcription step, so prewarm fires at the start of
+    the run to overlap model loading with the file copy/read."""
+    mock_ollama(monkeypatch)
+    calls = []
+    monkeypatch.setattr("summarizeaudio.pipeline.prewarm_async", lambda host, model: calls.append((host, model)))
+    cfg = make_config(tmp_output)
+    source = tmp_output / "notes.txt"
+    source.write_text("my notes")
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+    resolve_name_dialog(ui_queue, "Notes Topic")
+    p.run(mode=PipelineMode.LOCAL_TEXT, session_name="notes", source_path=source)
+    assert calls == [("http://localhost:11434", "x")]
+
+
+def test_record_mode_does_not_prewarm_in_pipeline(tmp_output, ui_queue, monkeypatch):
+    """RECORD already prewarmed at end-of-recording (tray), so the pipeline must
+    not fire a redundant prewarm for that mode."""
+    mock_ollama(monkeypatch)
+    monkeypatch.setattr(
+        "summarizeaudio.transcriber.Transcriber.transcribe",
+        lambda self, src, out, on_progress=None, on_diarize_start=None: out.write_text(
+            "transcript content long enough to summarize", encoding="utf-8"
+        ),
+    )
+    monkeypatch.setattr(
+        "summarizeaudio.summarizer.Summarizer.summarize",
+        lambda self, transcript, out_md: out_md.write_text(
+            "**Key Points:**\n- A.\n\n**Decisions / Action Items:**\n- None.\n\n**Notable Details:**\n- None.\n",
+            encoding="utf-8",
+        ),
+    )
+    calls = []
+    monkeypatch.setattr("summarizeaudio.pipeline.prewarm_async", lambda host, model: calls.append((host, model)))
+    cfg = make_config(tmp_output)
+    mp3 = tmp_output / "recording.mp3"
+    make_silence_mp3(mp3)
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+    resolve_name_dialog(ui_queue, "Recorded Topic")
+    p.run(mode=PipelineMode.RECORD, session_name="rec", mp3_path=mp3)
+    assert calls == []
+
+
 def test_mode3_does_not_touch_source_txt(tmp_output, ui_queue, monkeypatch):
     """Pipeline orchestration test — no transcription in Mode 3."""
     mock_ollama(monkeypatch)

@@ -138,6 +138,31 @@ def test_stop_recording_posts_show_workflow_to_queue(tmp_path, monkeypatch):
     assert ("show_workflow", "record", Path("/tmp/recording.mp3"), None) in items
 
 
+def test_stop_recording_prewarms_ollama_model(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())
+
+    calls = []
+    monkeypatch.setattr("summarizeaudio.tray.prewarm_async", lambda host, model: calls.append((host, model)))
+
+    class FakeRecorder:
+        def stop(self):
+            return (Path("/tmp/recording.mp3"), None, None)
+
+        def cleanup(self, delete_wav=False):
+            return None
+
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None, icon=None)
+    app._recorder = FakeRecorder()
+    monkeypatch.setattr(app, "_set_icon", lambda state: None)
+    monkeypatch.setattr(app, "_rebuild_menu", lambda: None)
+
+    app._on_stop_recording(None, None)
+
+    assert calls == [(app._cfg.ollama.host, "gemma3:4b")]
+
+
 def test_start_recording_does_not_prompt_for_name(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr("summarizeaudio.window_manager.WindowManager", lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm())

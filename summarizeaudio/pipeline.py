@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 from summarizeaudio.config import AppConfig, memory_warning
 from summarizeaudio.error_handler import friendly_message, post_error
+from summarizeaudio.ollama_client import prewarm_async
 from summarizeaudio.renamer import Renamer
 from summarizeaudio.summarizer import Summarizer, OllamaError
 from summarizeaudio.transcriber import Transcriber
@@ -241,6 +242,13 @@ class Pipeline:
             beh=cfg.behavior,
             ui_queue=self._ui_queue,
         )
+        # Start loading the Ollama model now (fire-and-forget) so it is warm by
+        # the time summarization begins. RECORD mode already prewarmed at
+        # end-of-recording (tray), so skip it here to avoid a redundant request;
+        # LOCAL_AUDIO overlaps loading with transcription, LOCAL_TEXT with the
+        # file copy/read.
+        if mode != PipelineMode.RECORD:
+            prewarm_async(cfg.ollama.host, cfg.ollama.model)
         workflow_key = str(uuid4())
         workflow_label = (
             "Recording"
