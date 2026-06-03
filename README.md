@@ -174,6 +174,22 @@ Open **Settings** from the tray (or click the `Diarization → …` status item)
 
 ---
 
+## Launch at login (optional)
+
+To have SummarizeAudio start automatically when you log in, open **Settings** from the menu-bar icon, set **Launch at Login** to **On**, then click **Apply**. It takes effect at your next login.
+
+You can also enable it during install with an opt-in flag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suryav0104/summarizeaudio/main/setup.sh | SUMMARIZEAUDIO_AUTOSTART=1 bash
+# or from a clone:
+SUMMARIZEAUDIO_AUTOSTART=1 bash setup.sh
+```
+
+Under the hood this writes a macOS LaunchAgent at `~/Library/LaunchAgents/com.summarizeaudio.plist`. Setting the toggle to **Off** (or deleting that file) disables it. macOS only.
+
+---
+
 ## Configuration
 
 The config file is at `~/.summarizeaudio/config.toml`. Key options:

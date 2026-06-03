@@ -218,3 +218,42 @@ Separate **preference** from **capability** and require both.
 - The user can turn diarization on/off from Settings; when the capability is missing the toggle is replaced by an "Unavailable" label plus a "How to enable" expander with a "Re-check" button (calls `load_dotenv(override=True)` then re-probes; if still unavailable it keeps the instructions visible and shows `missing_reason()` instead of collapsing).
 - `config.memory_warning` also routes through `effective_enabled(cfg)`, so the diarizer's ~1.5 GB is only added to the RAM budget when diarization is both preferred and capable — a token set with the preference off no longer triggers a spurious low-memory warning.
 - Known limitation (tech debt): when Ollama is unreachable the Settings **Apply** button is disabled wholesale, so a diarization-toggle change made in that state is discarded along with the (unusable) model selection. The diarization toggle is independent of Ollama and could be saved separately; deferred because the workaround (start Ollama, then Apply) is obvious.
+
+---
+
+## ADR-008: Use a macOS LaunchAgent plist as the single source of truth for launch-at-login
+
+**Date:** 2026-06-03
+**Status:** Accepted
+
+### Context
+
+SummarizeAudio has no `.app` bundle. It is launched via `venv/bin/python -m summarizeaudio` from the install directory. Users wanted an option to start the app automatically at login without manual shell-profile editing.
+
+Two designs were considered:
+
+1. Mirror the enabled/disabled state in `config.toml` AND write a plist. Two pieces of state that must be kept in sync; drift is possible (plist present but config says off, or vice versa).
+2. Treat plist presence on disk as the single source of truth. `is_enabled()` checks whether `~/Library/LaunchAgents/com.summarizeaudio.plist` exists. No config.toml key.
+
+For the activation mechanism, two approaches were considered:
+
+- **`launchctl bootstrap`** the agent immediately on Apply (current session starts a second instance right away).
+- **Write the plist only**, let macOS pick it up at the next login.
+
+### Decision
+
+Adopt design 2: the plist file IS the enabled state. `startup.enable()` writes `~/Library/LaunchAgents/com.summarizeaudio.plist` with `RunAtLoad=true`; `startup.disable()` removes it (idempotent); `startup.is_enabled()` checks file presence. No `config.toml` mirror.
+
+Reject immediate `launchctl bootstrap`: a `RunAtLoad=true` agent bootstrapped into the current session would spawn a second instance of the already-running app. Preventing that requires a single-instance guard (lockfile or socket), which adds complexity for negligible benefit. The next-login deferral is the correct user expectation anyway ("will start next time I log in").
+
+`startup.is_supported()` returns `True` only on macOS; the Settings row is hidden on other platforms.
+
+The installer opt-in (`SUMMARIZEAUDIO_AUTOSTART=1 bash setup.sh`) calls `startup.enable()` during setup, mirroring the `SUMMARIZEAUDIO_DIARIZATION=1` pattern.
+
+### Consequences
+
+- Apply in Settings takes effect at the next login, not the current session. The UI makes this explicit ("takes effect at your next login").
+- Toggling is durable: the plist survives app updates because setup.sh does not remove it.
+- No config drift: deleting the plist manually (or via `startup.disable()`) is the complete disable action.
+- `plistlib.dump` is used for serialization (correct typing, proper XML escaping) rather than hand-written XML.
+- macOS only. Windows and Linux do not surface the setting.

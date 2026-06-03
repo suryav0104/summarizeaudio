@@ -98,3 +98,19 @@ The device probe opens an `sd.InputStream` and `sd.sleep(INPUT_HEALTH_SAMPLE_SEC
 
 ### Honest token detection: a non-empty placeholder fools `bool(os.environ.get(...))`
 `token_present()` is `bool(os.environ.get("HUGGINGFACE_ACCESS_TOKEN"))`. If the `.env` scaffold ships `HUGGINGFACE_ACCESS_TOKEN=hf_replace_me`, that is a non-empty value, so the check returns True and the app reports diarization "available" when it is not. Fix: ship the scaffold line commented out (`#HUGGINGFACE_ACCESS_TOKEN=...`) so nothing is exported until the user uncomments and fills it. The installer's `real_hf_token_present()` shell helper applies the same rule (uncommented, non-placeholder, non-empty) before writing `enabled = true`.
+
+---
+
+## macOS LaunchAgent
+
+### Login-launched agents inherit a stripped PATH; Homebrew tools go missing
+A LaunchAgent started by macOS at login does not source the user's shell profile. The default PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, so `ffmpeg` (in `/opt/homebrew/bin` on Apple Silicon or `/usr/local/bin` on Intel) and `ollama` are not found. Fix: set `EnvironmentVariables.PATH` in the plist to `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`. Both Homebrew prefixes are included so the same plist works on both chip architectures.
+
+### `load_dotenv()` resolves from CWD; a login agent can start anywhere
+`load_dotenv()` (called in `__main__.py`) searches upward from the current working directory. A LaunchAgent starts with an arbitrary CWD (often `/`), so the `.env` file in the install directory is never found and `HUGGINGFACE_ACCESS_TOKEN` is not loaded. Fix: set `WorkingDirectory` in the plist to the install directory. This is also needed so relative paths in the app resolve correctly.
+
+### `sys.executable` is three levels deep inside the install dir, not two
+`sys.executable` points to `<install>/venv/bin/python`. Deriving the install directory requires `Path(sys.executable).parents[2]` (bin → venv → install root). Using `.parents[1]` stops at the venv directory, which is wrong.
+
+### Use `plistlib.dump` rather than hand-written XML
+`plistlib.dump` (stdlib) serializes Python dicts to correctly typed, properly escaped plist XML. Hand-writing the XML is error-prone (boolean values must be `<true/>` / `<false/>`, not strings; special characters in paths must be escaped). `plistlib` handles all of this automatically and is already available in any Python 3.x environment.
