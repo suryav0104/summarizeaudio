@@ -138,6 +138,55 @@ def test_diarizer_dominant_speaker_picks_most_overlap() -> None:
     assert d._dominant_speaker(6.0, 10.0, turns, speaker_map) == "Speaker 2"
 
 
+def test_progress_hook_reports_fraction_and_throttles() -> None:
+    """The hook converts pyannote (completed/total) into a 0..1 fraction, emits
+    None when there is no total (single-shot steps), and skips repeat calls that
+    land on the same integer percent so the UI queue is not flooded."""
+    from summarizeaudio.diarizer import _ProgressHook
+    calls = []
+    hook = _ProgressHook(lambda step, frac: calls.append((step, frac)))
+    hook("embeddings", None, total=100, completed=50)
+    hook("embeddings", None, total=100, completed=50)   # same 50% -> throttled
+    hook("embeddings", None, total=100, completed=75)
+    hook("segmentation", None, total=None, completed=None)  # no total -> None
+    assert calls == [("embeddings", 0.5), ("embeddings", 0.75), ("segmentation", None)]
+
+
+def test_diarizer_label_forwards_progress(tmp_path: Path) -> None:
+    """label(progress_callback=...) installs a hook on the pyannote call; when
+    pyannote invokes the hook during the run, the callback receives the step
+    name and fraction."""
+    import wave
+    wav = tmp_path / "p.wav"
+    with wave.open(str(wav), "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 16000)
+
+    fake_turn = MagicMock(); fake_turn.start = 0.0; fake_turn.end = 4.0
+    fake_annotation = MagicMock()
+    fake_annotation.itertracks.return_value = [(fake_turn, None, "SPEAKER_00")]
+    fake_result = MagicMock(); fake_result.speaker_diarization = fake_annotation
+
+    captured = {}
+    def fake_pipeline(path, **kwargs):
+        hook = kwargs.get("hook")
+        captured["hook"] = hook
+        if hook is not None:
+            hook("embeddings", None, total=100, completed=50)
+        return fake_result
+
+    d = _make_diarizer()
+    d._pipeline = fake_pipeline
+    progress = []
+    d.label(
+        wav,
+        [types.SimpleNamespace(start=0.0, end=4.0, text="hi")],
+        progress_callback=lambda step, frac: progress.append((step, frac)),
+    )
+    assert captured["hook"] is not None
+    assert progress == [("embeddings", 0.5)]
+
+
 def test_diarizer_label_with_mocked_pipeline(tmp_path: Path) -> None:
     """Full label() path with pyannote mocked — no token or model download."""
     import wave

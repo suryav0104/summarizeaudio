@@ -3,9 +3,45 @@ from __future__ import annotations
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, "float | None"], None]
+
+
+class _ProgressHook:
+    """Adapts pyannote's hook protocol to a simple progress callback.
+
+    pyannote calls the hook as hook(step_name, step_artifact, file=None,
+    total=None, completed=None). Steps that report incremental work (the long
+    embeddings step) pass total/completed; single-shot steps pass neither. We
+    forward a 0..1 fraction (or None when the step is not measurable) and skip
+    repeat calls that resolve to the same integer percent so the UI queue is
+    not flooded during the embeddings batches.
+    """
+
+    def __init__(self, callback: ProgressCallback) -> None:
+        self._callback = callback
+        self._last: tuple[str, int | None] | None = None
+
+    def __call__(
+        self,
+        step_name: str,
+        step_artifact: Any,
+        file: Any = None,
+        total: int | None = None,
+        completed: int | None = None,
+    ) -> None:
+        if completed is None or not total:
+            fraction: float | None = None
+        else:
+            fraction = max(0.0, min(1.0, completed / total))
+        key = (step_name, None if fraction is None else int(fraction * 100))
+        if key == self._last:
+            return
+        self._last = key
+        self._callback(step_name, fraction)
 
 
 class Diarizer:
@@ -35,6 +71,7 @@ class Diarizer:
         audio_path: Path,
         segments: list[Any],
         num_speakers: int | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> str:
         """Assign speaker labels to Whisper segments and return formatted transcript.
 
@@ -49,6 +86,8 @@ class Diarizer:
         kwargs: dict[str, Any] = {}
         if num_speakers is not None:
             kwargs["num_speakers"] = num_speakers
+        if progress_callback is not None:
+            kwargs["hook"] = _ProgressHook(progress_callback)
 
         # pyannote's crop() requires an exact sample count, but MP3 decoding
         # produces slightly fewer samples than round(duration × sr) due to

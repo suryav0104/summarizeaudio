@@ -285,9 +285,10 @@ def test_diarization_toggle_visible_when_available_and_apply_persists(root, tmp_
         win = SettingsWindow(root, cfg, queue.Queue())
         win.show()
         assert win._diar_available is True
-        assert win._diar_var is not None
-        assert win._diar_var.get() is False
-        win._diar_var.set(True)
+        assert win._diar_combo is not None
+        assert list(win._diar_combo["values"]) == ["On", "Off"]
+        assert win._diar_combo.get() == "Off"
+        win._diar_combo.set("On")
         win._on_apply()
     assert cfg.diarization.enabled is True
     assert saved == [True]
@@ -304,7 +305,7 @@ def test_diarization_unavailable_shows_link_not_toggle(root, tmp_path, monkeypat
         win = SettingsWindow(root, cfg, queue.Queue())
         win.show()
         assert win._diar_available is False
-        assert win._diar_var is None
+        assert win._diar_combo is None
         assert win._diar_link is not None
         assert win._diar_steps_visible is False
         win._on_apply()
@@ -347,7 +348,7 @@ def test_recheck_reloads_env_and_shows_toggle_when_available(root, tmp_path, mon
         win._on_diar_recheck()
     assert calls["dotenv"] == 1
     assert win._diar_available is True
-    assert win._diar_var is not None
+    assert win._diar_combo is not None
 
 
 def test_recheck_keeps_steps_and_shows_note_when_still_unavailable(root, tmp_path, monkeypatch):
@@ -366,4 +367,21 @@ def test_recheck_keeps_steps_and_shows_note_when_still_unavailable(root, tmp_pat
     assert win._diar_available is False
     assert win._diar_steps_visible is True
     assert win._diar_recheck_note is not None
-    assert win._diar_recheck_note.cget("text") != ""
+    note = win._diar_recheck_note.cget("text")
+    assert note != ""
+    # User-facing copy must not use em-dashes (project rule).
+    assert "\u2014" not in note
+
+
+def test_diarization_dropdown_initial_on_when_enabled(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        cfg = _cfg(tmp_path)
+        cfg.diarization.enabled = True
+        win = SettingsWindow(root, cfg, queue.Queue())
+        win.show()
+        assert win._diar_combo is not None
+        assert win._diar_combo.get() == "On"

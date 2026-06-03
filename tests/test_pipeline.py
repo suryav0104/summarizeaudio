@@ -306,7 +306,7 @@ def test_record_mode_does_not_prewarm_in_pipeline(tmp_output, ui_queue, monkeypa
     mock_ollama(monkeypatch)
     monkeypatch.setattr(
         "summarizeaudio.transcriber.Transcriber.transcribe",
-        lambda self, src, out, on_progress=None, on_diarize_start=None: out.write_text(
+        lambda self, src, out, on_progress=None, on_diarize_start=None, on_diarize_progress=None: out.write_text(
             "transcript content long enough to summarize", encoding="utf-8"
         ),
     )
@@ -326,6 +326,46 @@ def test_record_mode_does_not_prewarm_in_pipeline(tmp_output, ui_queue, monkeypa
     resolve_name_dialog(ui_queue, "Recorded Topic")
     p.run(mode=PipelineMode.RECORD, session_name="rec", mp3_path=mp3)
     assert calls == []
+
+
+@pytest.mark.parametrize("mode", [PipelineMode.RECORD, PipelineMode.LOCAL_AUDIO])
+def test_pipeline_posts_diarization_progress(tmp_output, monkeypatch, mode):
+    """When the transcriber reports diarization progress, the pipeline relays it
+    onto the ui_queue as ('diarization_progress', step, fraction) for the
+    workflow window to render. Both audio modes (live recording and an imported
+    file) share the same transcribe call, so progress must surface for each."""
+    mock_ollama(monkeypatch)
+
+    def fake_transcribe(self, audio, out_txt, on_progress=None, on_diarize_start=None, on_diarize_progress=None):
+        if on_diarize_progress is not None:
+            on_diarize_progress("embeddings", 0.5)
+        out_txt.write_text("transcript content long enough to summarize", encoding="utf-8")
+
+    monkeypatch.setattr("summarizeaudio.transcriber.Transcriber.transcribe", fake_transcribe)
+    monkeypatch.setattr(
+        "summarizeaudio.summarizer.Summarizer.summarize",
+        lambda self, t, out_md: out_md.write_text("**Key Points:**\n- A.\n", encoding="utf-8"),
+    )
+    monkeypatch.setattr("summarizeaudio.pipeline.prewarm_async", lambda host, model: None)
+    cfg = make_config(tmp_output)
+    audio = make_silence_mp3(tmp_output / "rec.mp3")
+    ui_queue = SpyQueue()
+    p = Pipeline(cfg=cfg, ui_queue=ui_queue)
+
+    def worker():
+        while True:
+            item = ui_queue.get(timeout=5)
+            if item[0] == "name_dialog":
+                item[1]._resolve("Rec")
+                return
+
+    threading.Thread(target=worker, daemon=True).start()
+    if mode == PipelineMode.RECORD:
+        p.run(mode=mode, session_name="rec", mp3_path=audio)
+    else:
+        p.run(mode=mode, session_name="rec", source_path=audio)
+
+    assert ("diarization_progress", "embeddings", 0.5) in ui_queue.recorded
 
 
 def test_mode3_does_not_touch_source_txt(tmp_output, ui_queue, monkeypatch):

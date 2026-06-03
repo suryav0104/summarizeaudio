@@ -36,6 +36,24 @@ def _determinate_label_color(filled: int, width: int) -> str:
     return "white" if filled >= width / 2 else "#475569"
 
 
+def _capsule_coords(
+    x1: float, y1: float, x2: float, y2: float
+) -> tuple[tuple[float, float, float, float], ...]:
+    """Coordinates for the (rectangle, left-oval, right-oval) that compose a
+    rounded capsule. A zero-or-negative width collapses every piece to a single
+    point, so a 0% fill renders nothing instead of a thin black sliver with
+    sharp corners against the rounded track. Wider shapes keep the corner radius
+    capped at half the width so a narrow fill stays a pill, not a fixed blob."""
+    if x2 - x1 <= 0:
+        point = (x1, y1, x1, y1)
+        return (point, point, point)
+    radius = max(1.0, min((y2 - y1) / 2.0, (x2 - x1) / 2.0))
+    rect = (x1 + radius, y1, x2 - radius, y2)
+    left = (x1, y1, x1 + radius * 2, y2)
+    right = (x2 - radius * 2, y1, x2, y2)
+    return (rect, left, right)
+
+
 class _MarqueeProgress:
     def __init__(
         self,
@@ -117,6 +135,28 @@ class _MarqueeProgress:
                 pass
             self._after_id = None
 
+    def to_marquee(self) -> None:
+        """Switch the bar to the bouncing-marquee mode and resume animating.
+
+        Used for diarization sub-steps that report no measurable fraction, so the
+        bar keeps moving to signal liveness without implying a known percent."""
+        if self._mode != "marquee":
+            self._mode = "marquee"
+            self._draw()
+        self.start()
+
+    def to_determinate(self, pct: float) -> None:
+        """Switch the bar to the filled-percent mode and set the fill.
+
+        Used for the long embeddings pass, the only diarization step pyannote
+        reports a real fraction for. Stops the marquee animation first so the two
+        modes never fight over the same canvas items."""
+        if self._mode != "determinate":
+            self.stop()
+            self._mode = "determinate"
+            self._draw()
+        self.set_percent(pct)
+
     def destroy(self) -> None:
         self.stop()
         self._frame.destroy()
@@ -132,20 +172,17 @@ class _MarqueeProgress:
         self._draw()
 
     def _capsule(self, x1: float, y1: float, x2: float, y2: float, color: str) -> list[int]:
-        # Cap the corner radius by half the width so a narrow shape (a low-percent
-        # fill) stays a thin pill instead of ballooning into a fixed ~height-wide
-        # blob. Full-width shapes (the track) keep the normal height-based radius.
-        radius = max(1.0, min((y2 - y1) / 2.0, (x2 - x1) / 2.0))
-        rect = self._canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=color, outline="")
-        left = self._canvas.create_oval(x1, y1, x1 + radius * 2, y2, fill=color, outline="")
-        right = self._canvas.create_oval(x2 - radius * 2, y1, x2, y2, fill=color, outline="")
-        return [rect, left, right]
+        (rx1, ry1, rx2, ry2), left, right = _capsule_coords(x1, y1, x2, y2)
+        rect = self._canvas.create_rectangle(rx1, ry1, rx2, ry2, fill=color, outline="")
+        left_item = self._canvas.create_oval(*left, fill=color, outline="")
+        right_item = self._canvas.create_oval(*right, fill=color, outline="")
+        return [rect, left_item, right_item]
 
     def _set_capsule(self, items: list[int], x1: float, y1: float, x2: float, y2: float, color: str) -> None:
-        radius = max(1.0, min((y2 - y1) / 2.0, (x2 - x1) / 2.0))
-        self._canvas.coords(items[0], x1 + radius, y1, x2 - radius, y2)
-        self._canvas.coords(items[1], x1, y1, x1 + radius * 2, y2)
-        self._canvas.coords(items[2], x2 - radius * 2, y1, x2, y2)
+        rect, left, right = _capsule_coords(x1, y1, x2, y2)
+        self._canvas.coords(items[0], *rect)
+        self._canvas.coords(items[1], *left)
+        self._canvas.coords(items[2], *right)
         self._canvas.itemconfigure(items[0], fill=color)
         self._canvas.itemconfigure(items[1], fill=color)
         self._canvas.itemconfigure(items[2], fill=color)
@@ -363,6 +400,7 @@ class WorkflowWindow:
         self._transcription_pct: float = 0.0
         self._step_start_time: float | None = None
         self._step_durations: dict[str, str] = {}
+        self._step_seconds: dict[str, float] = {}
         self._elapsed_tick_id: str | None = None
         self._timing_step: str | None = None
         self._elapsed_var = tk.StringVar(value="")
@@ -438,6 +476,7 @@ class WorkflowWindow:
         self._cancel_elapsed_tick()
         self._step_start_time = None
         self._step_durations = {}
+        self._step_seconds = {}
         self._timing_step = None
         self._elapsed_var.set("")
         self._pipeline = Pipeline(cfg=self._cfg, ui_queue=self._ui_queue)
@@ -658,7 +697,7 @@ class WorkflowWindow:
                 step_elapsed=self._step_elapsed_by_index(),
             ).pack(fill="x", pady=(10, 2))
         else:
-            ttk.Label(header, text=self._step_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
+            ttk.Label(header, text=self._header_badge_text(), style="StepBadge.TLabel").pack(side="right", anchor="ne", pady=(4, 0))
             header_left = ttk.Frame(header, style="SummarizeAudio.TFrame")
             header_left.pack(side="left", fill="both", expand=True, padx=(0, 16))
             ttk.Label(header_left, textvariable=self._title, style="Title.TLabel").pack(anchor="w")
@@ -731,7 +770,11 @@ class WorkflowWindow:
             self._title.set("Diarizing")
             self._subtitle.set("Identifying and labeling individual speakers.")
             self._status.set("Diarize the audio")
-            self._detail_text_var.set("Matching each transcript segment to the speakers detected in the audio.")
+            self._detail_text_var.set(
+                "Matching each transcript segment to the speakers detected in the "
+                "audio. This runs on the CPU and is slow. Expect it to take roughly "
+                "as long as the recording itself, sometimes several minutes."
+            )
         elif self._step_state == "summarizing":
             self._title.set("Summarizing")
             self._subtitle.set("Generating a summary from the transcript.")
@@ -1067,6 +1110,10 @@ class WorkflowWindow:
         kind = item[0]
         if kind == "override_dialog":
             _, override, prompt = item
+            # The active processing phase (transcription/diarization) is done by
+            # the time this interactive dialog appears. Bank its duration and
+            # stop the clock so prompt-editing time is excluded from the total.
+            self._finish_step_timer()
             self._resolver = override
             self._resolver_kind = kind
             self._prompt_text = prompt
@@ -1075,6 +1122,9 @@ class WorkflowWindow:
             self._render()
         elif kind == "name_dialog":
             _, name_event, default_name = item[:3]
+            # Same as the prompt dialog: confirming the file name is interaction
+            # time, so stop the clock while the dialog is open.
+            self._finish_step_timer()
             self._resolver = name_event
             self._resolver_kind = kind
             self._default_name = default_name
@@ -1127,6 +1177,19 @@ class WorkflowWindow:
             self._transcription_pct = pct
             if self._progress is not None and self._det_progress_bar is None:
                 self._progress.set_percent(pct)
+        elif kind == "diarization_progress":
+            _, step_name, fraction = item
+            # Drive only the progress bar; the expectation message in the detail
+            # line stays put and the step timer keeps running because we never
+            # touch them or re-render. The measurable embeddings pass fills the
+            # bar with a centered percent; every other sub-step reports no
+            # fraction and falls back to the bouncing marquee. A late item that
+            # arrives after the phase advanced is dropped by the state guard.
+            if self._step_state == "diarizing" and self._progress is not None:
+                if fraction is None:
+                    self._progress.to_marquee()
+                else:
+                    self._progress.to_determinate(fraction * 100.0)
         elif kind == "workflow_phase":
             _, phase = item
             if phase == "diarizing":
@@ -1206,8 +1269,29 @@ class WorkflowWindow:
         if self._step_start_time is not None and self._timing_step is not None:
             elapsed = time.time() - self._step_start_time
             self._step_durations[self._timing_step] = self._fmt_elapsed(elapsed)
+            # Keyed by phase so a retried phase overwrites rather than double-counts.
+            self._step_seconds[self._timing_step] = elapsed
         self._step_start_time = None
         self._timing_step = None
+
+    def _total_processing_label(self) -> str | None:
+        """Sum of the active processing phases (transcribe + diarize + summarize),
+        formatted for the summary header. None when nothing was timed — the idle
+        gaps where the user picks a file, edits the prompt, or confirms the name
+        are never started as a phase, so they cannot be counted."""
+        if not self._step_seconds:
+            return None
+        total = sum(self._step_seconds.values())
+        return f"Total Processing Time: {self._fmt_elapsed(total)}"
+
+    def _header_badge_text(self) -> str:
+        """Top-right header text. On the summary page it reports the total
+        processing time; everywhere else it stays the 'Step N of M' badge."""
+        if self._state == "summary":
+            total = self._total_processing_label()
+            if total is not None:
+                return total
+        return self._step_badge_text()
 
     def _elapsed_tick(self) -> None:
         try:

@@ -607,6 +607,238 @@ def test_determinate_label_color_contrasts_with_fill():
     assert _determinate_label_color(filled=300, width=480) == "white"
 
 
+def test_capsule_coords_collapse_to_a_point_at_zero_width():
+    """A 0% fill has zero width. Every piece of the capsule must collapse to a
+    single point so Tk renders nothing — no vertical black sliver against the
+    rounded grey track."""
+    from summarizeaudio.workflow_window import _capsule_coords
+    rect, left, right = _capsule_coords(0, 2, 0, 30)
+    assert rect == (0, 2, 0, 2)
+    assert left == (0, 2, 0, 2)
+    assert right == (0, 2, 0, 2)
+
+
+def test_capsule_coords_form_rounded_pill_when_wide():
+    """A full-width shape keeps the height-based corner radius, composed of a
+    centre rectangle flanked by two end ovals."""
+    from summarizeaudio.workflow_window import _capsule_coords
+    rect, left, right = _capsule_coords(0, 2, 480, 30)
+    radius = 14.0  # min((30-2)/2, (480-0)/2)
+    assert rect == (0 + radius, 2, 480 - radius, 30)
+    assert left == (0, 2, 0 + radius * 2, 30)
+    assert right == (480 - radius * 2, 2, 480, 30)
+
+
+def test_total_processing_label_sums_active_step_seconds(tmp_path):
+    """Total processing time is the sum of the active phase durations only
+    (transcribe + diarize + summarize), formatted MM:SS. Idle interaction gaps
+    are never timed, so they cannot leak in."""
+    win = _bare_window(make_config(tmp_path), "record")
+    win._step_seconds = {"processing": 100.0, "summarizing": 22.0}
+    assert win._total_processing_label() == "Total Processing Time: 02:02 min"
+
+
+def test_total_processing_label_none_without_timing(tmp_path):
+    win = _bare_window(make_config(tmp_path), "record")
+    win._step_seconds = {}
+    assert win._total_processing_label() is None
+
+
+def test_header_badge_shows_total_time_on_summary(tmp_path):
+    win = _bare_window(make_config(tmp_path), "record")
+    win._state = "summary"
+    win._step_seconds = {"processing": 60.0}
+    assert win._header_badge_text() == "Total Processing Time: 01:00 min"
+
+
+def test_header_badge_uses_step_badge_off_summary(tmp_path):
+    """Only the summary page shows the total time; every other state keeps the
+    'Step N of M' badge even when timings exist."""
+    win = _bare_window(make_config(tmp_path), "record")
+    win._state = "name"
+    win._step_seconds = {"processing": 60.0}
+    win._step_badge_text = lambda: "Step 9 of 9"
+    assert win._header_badge_text() == "Step 9 of 9"
+
+
+def test_header_badge_falls_back_to_step_badge_when_no_timing(tmp_path):
+    win = _bare_window(make_config(tmp_path), "record")
+    win._state = "summary"
+    win._step_seconds = {}
+    win._step_badge_text = lambda: "Step 3 of 3"
+    assert win._header_badge_text() == "Step 3 of 3"
+
+
+def test_finish_step_timer_records_raw_seconds(tmp_path, monkeypatch):
+    """Finishing a phase records its raw duration in seconds (for summing) in
+    addition to the human-readable per-step string."""
+    import summarizeaudio.workflow_window as ww
+    win = _bare_window(make_config(tmp_path), "record")
+    win._elapsed_tick_id = None
+    win._step_start_time = 1000.0
+    win._timing_step = "processing"
+    win._step_durations = {}
+    win._step_seconds = {}
+    monkeypatch.setattr(ww.time, "time", lambda: 1042.0)
+    win._finish_step_timer()
+    assert win._step_seconds["processing"] == 42.0
+    assert win._step_durations["processing"] == "00:42 min"
+
+
+def _timer_window(tmp_path):
+    win = _bare_window(make_config(tmp_path), "record")
+    win._render = lambda: None
+    win._resolver = None
+    win._elapsed_tick_id = None
+    win._step_durations = {}
+    win._step_seconds = {}
+    win._timing_step = "processing"
+    win._step_start_time = 1000.0
+    return win
+
+
+def test_prompt_dialog_banks_active_phase_and_stops_timing(tmp_path, monkeypatch):
+    """Opening the prompt-review dialog ends the transcription phase and stops
+    the clock, so the time the user spends editing the prompt is not counted in
+    the total processing time."""
+    import summarizeaudio.workflow_window as ww
+    win = _timer_window(tmp_path)
+    monkeypatch.setattr(ww.time, "time", lambda: 1030.0)
+    win._handle_item(("override_dialog", SimpleNamespace(), "Prompt {transcript}"))
+    assert win._step_seconds["processing"] == 30.0
+    assert win._step_start_time is None
+
+
+def test_name_dialog_banks_active_phase_and_stops_timing(tmp_path, monkeypatch):
+    """Opening the name/confirm dialog stops the clock for the same reason —
+    confirming the file name is interaction time, not processing time."""
+    import summarizeaudio.workflow_window as ww
+    win = _timer_window(tmp_path)
+    monkeypatch.setattr(ww.time, "time", lambda: 1030.0)
+    win._handle_item(("name_dialog", SimpleNamespace(), "My Recording"))
+    assert win._step_seconds["processing"] == 30.0
+    assert win._step_start_time is None
+
+
+def test_diarizing_detail_sets_time_expectation(tmp_path, monkeypatch):
+    """Before any percent arrives, the Diarize step must set the expectation
+    that it is slow (CPU-bound, roughly the length of the audio), so a multi-
+    minute wait does not look like a hang."""
+    monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
+    fake_root = FakeRoot()
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
+    monkeypatch.setattr("summarizeaudio.workflow_window.tk.StringVar", lambda value="": FakeStringVar(value))
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Style", lambda: FakeStyle())
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Frame", FakeFrame)
+    monkeypatch.setattr("summarizeaudio.workflow_window.ttk.Label", FakeFrame)
+
+    cfg = make_config(tmp_path)
+    win = workflow_window.WorkflowWindow(SimpleNamespace(), cfg, queue_mod.Queue(), "record", source=Path("/tmp/recording.mp3"))
+    win._status = FakeStringVar()
+    win._step_state = "diarizing"
+    win._render_processing(FakeFrame())
+    assert win._status.get() == "Diarize the audio"
+    assert "minute" in win._detail_text_var.get().lower()
+
+
+@pytest.fixture
+def tk_root():
+    import tkinter as tk
+    try:
+        r = tk.Tk()
+    except Exception:
+        pytest.skip("Tk not available")
+    r.withdraw()
+    yield r
+    try:
+        r.destroy()
+    except Exception:
+        pass
+
+
+def test_marquee_to_determinate_shows_centered_percent(tk_root):
+    """During the measurable embeddings step the bar switches to a filled bar
+    with the percent printed inside it, like the transcription bar, and stops
+    bouncing."""
+    from summarizeaudio.workflow_window import _MarqueeProgress
+    bar = _MarqueeProgress(tk_root, width=400, height=32, mode="marquee")
+    bar.pack()
+    bar.start()
+    bar.to_determinate(50.0)
+    assert bar._mode == "determinate"
+    assert bar._pct == 50.0
+    assert bar._text_item is not None
+    assert bar._running is False
+
+
+def test_marquee_to_marquee_resumes_bounce(tk_root):
+    """The non-measurable diarization steps switch the bar back to the bouncing
+    marquee, dropping the percent text."""
+    from summarizeaudio.workflow_window import _MarqueeProgress
+    bar = _MarqueeProgress(tk_root, width=400, height=32, mode="marquee")
+    bar.pack()
+    bar.to_determinate(50.0)
+    bar.to_marquee()
+    assert bar._mode == "marquee"
+    assert bar._text_item is None
+    assert bar._running is True
+
+
+class _FakeProgress:
+    def __init__(self):
+        self.calls = []
+
+    def to_determinate(self, pct):
+        self.calls.append(("determinate", pct))
+
+    def to_marquee(self):
+        self.calls.append(("marquee",))
+
+
+def test_handle_diarization_progress_fills_bar_for_measurable_step():
+    """A measurable fraction switches the bar to the in-bar percent display,
+    leaves the expectation detail text untouched, keeps the step timer running,
+    and does NOT re-render (re-rendering would reset the bar)."""
+    win = _bare_window(None, "record")
+    win._step_state = "diarizing"
+    win._detail_text_var = FakeStringVar("expectation message")
+    win._progress = _FakeProgress()
+    win._step_start_time = 1234.0
+    rendered = []
+    win._render = lambda: rendered.append(True)
+    win._handle_item(("diarization_progress", "embeddings", 0.5))
+    assert win._progress.calls == [("determinate", 50.0)]
+    assert win._detail_text_var.get() == "expectation message"
+    assert win._step_start_time == 1234.0
+    assert rendered == []
+
+
+def test_handle_diarization_progress_bounces_bar_for_unmeasurable_step():
+    """A step that reports no fraction switches the bar back to the bouncing
+    marquee, and still leaves the expectation message in place."""
+    win = _bare_window(None, "record")
+    win._step_state = "diarizing"
+    win._detail_text_var = FakeStringVar("expectation message")
+    win._progress = _FakeProgress()
+    win._render = lambda: None
+    win._handle_item(("diarization_progress", "segmentation", None))
+    assert win._progress.calls == [("marquee",)]
+    assert win._detail_text_var.get() == "expectation message"
+
+
+def test_handle_diarization_progress_ignored_when_not_diarizing():
+    """A late progress item that arrives after the phase moved on must not touch
+    the bar or the detail line."""
+    win = _bare_window(None, "record")
+    win._step_state = "summarizing"
+    win._detail_text_var = FakeStringVar("summary detail")
+    win._progress = _FakeProgress()
+    win._render = lambda: None
+    win._handle_item(("diarization_progress", "embeddings", 0.5))
+    assert win._progress.calls == []
+    assert win._detail_text_var.get() == "summary detail"
+
+
 def test_workflow_window_name_dialog_uses_same_window(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()

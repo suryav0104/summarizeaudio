@@ -66,3 +66,38 @@ def test_transcriber_loads_whisper_without_status_notifications(tmp_path, ui_que
 
     assert out_txt.read_text(encoding="utf-8") == "hello world"
     assert calls == []
+
+
+def test_transcriber_forwards_diarization_progress(tmp_path, ui_queue, monkeypatch):
+    """transcribe(on_diarize_progress=...) is handed to diarizer.label as
+    progress_callback, so per-step diarization progress reaches the caller."""
+    class FakeWhisperModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, audio_path, language=None):
+            return [types.SimpleNamespace(start=0.0, end=1.0, text="hi")], types.SimpleNamespace(language="en", duration=1.0)
+
+    fake_mod = types.ModuleType("faster_whisper")
+    fake_mod.WhisperModel = FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_mod)
+
+    received = {}
+
+    class FakeDiarizer:
+        def label(self, audio_path, segments, progress_callback=None):
+            received["callback"] = progress_callback
+            if progress_callback is not None:
+                progress_callback("embeddings", 0.5)
+            return "Speaker 1: hi"
+
+    progress = []
+    wav = make_silence_wav(tmp_path / "silence.wav")
+    t = Transcriber(model="tiny", language="en", ui_queue=ui_queue, diarizer=FakeDiarizer())
+    t.transcribe(
+        wav,
+        tmp_path / "out.txt",
+        on_diarize_progress=lambda step, frac: progress.append((step, frac)),
+    )
+    assert received["callback"] is not None
+    assert progress == [("embeddings", 0.5)]

@@ -394,11 +394,18 @@ class Pipeline:
             except queue.Full:
                 pass
 
+        def _on_diarize_progress(step_name: str, fraction) -> None:
+            try:
+                self._ui_queue.put_nowait(("diarization_progress", step_name, fraction))
+            except queue.Full:
+                pass
+
         try:
             transcriber.transcribe(
                 transcription_source, tmp_txt,
                 on_progress=_on_transcription_progress,
                 on_diarize_start=_on_diarize_start,
+                on_diarize_progress=_on_diarize_progress,
             )
         except Exception as exc:
             log.exception("Transcription failed for %s", audio_for_transcription)

@@ -67,6 +67,12 @@ class SettingsWindow:
             foreground="#dc2626",
             font=("Helvetica Neue", 10),
         )
+        style.configure(
+            "Hint.TLabel",
+            background="white",
+            foreground="#5b6577",
+            font=("Helvetica Neue", 11),
+        )
 
         self._button_font = ("Helvetica Neue", 12, "bold")
         self._button_secondary_bg = "#f0f3f8"
@@ -84,11 +90,12 @@ class SettingsWindow:
         self._model_values: list[str] = []
         self._model_list: list[ModelInfo] | None = None
         self._apply_disabled: bool = False
+        self._combo_width: int = 20
 
         # Diarization row state.
         self._diar_row: ttk.Frame | None = None
         self._diar_available: bool = False
-        self._diar_var: tk.BooleanVar | None = None
+        self._diar_combo: ttk.Combobox | None = None
         self._diar_link: tk.Label | None = None
         self._diar_steps_frame: tk.Frame | None = None
         self._diar_steps_visible: bool = False
@@ -117,6 +124,9 @@ class SettingsWindow:
             all_strings.append(model_initial)
         # +2 for the chevron / inner padding.
         combo_width = (max((len(s) for s in all_strings), default=20)) + 2
+        # Stored so the diarization row (rebuilt later on Re-check) can match the
+        # Input/Model dropdown width for a clean, aligned column.
+        self._combo_width = combo_width
 
         # ── Bottom button bar (packed first so it always claims the bottom) ──
         button_bar = ttk.Frame(self._win, style="SummarizeAudio.TFrame", padding=(20, 10, 20, 16))
@@ -263,7 +273,7 @@ class SettingsWindow:
         assert self._diar_row is not None
         for child in self._diar_row.winfo_children():
             child.destroy()
-        self._diar_var = None
+        self._diar_combo = None
         self._diar_link = None
         self._diar_steps_frame = None
         self._diar_steps_visible = False
@@ -275,14 +285,18 @@ class SettingsWindow:
         ttk.Label(self._diar_row, text="Speaker Diarization", style="Step.TLabel").pack(anchor="w")
 
         if self._diar_available:
-            self._diar_var = tk.BooleanVar(value=bool(self._cfg.diarization.enabled))
-            chk = ttk.Checkbutton(
+            ttk.Label(
                 self._diar_row,
                 text="Label speakers in transcripts",
-                variable=self._diar_var,
+                style="Hint.TLabel",
+            ).pack(anchor="w", pady=(2, 0))
+            self._diar_combo = ttk.Combobox(
+                self._diar_row, state="readonly", width=self._combo_width,
+                values=["On", "Off"],
             )
-            chk.pack(anchor="w", pady=(4, 0))
-            self._diar_focus_widget = chk
+            self._diar_combo.set("On" if self._cfg.diarization.enabled else "Off")
+            self._diar_combo.pack(anchor="w", pady=(4, 0))
+            self._diar_focus_widget = self._diar_combo
             self._resize_for_steps(False)
             return
 
@@ -334,7 +348,7 @@ class SettingsWindow:
         # rather than silently collapsing back to the bare link.
         reason = diarization.missing_reason() or "still unavailable"
         if self._diar_recheck_note is not None:
-            self._diar_recheck_note.configure(text=f"Still unavailable — {reason}.")
+            self._diar_recheck_note.configure(text=f"Still unavailable: {reason}.")
 
     def _resize_for_steps(self, expanded: bool) -> None:
         try:
@@ -496,8 +510,8 @@ class SettingsWindow:
 
         self._cfg.recording.input_device = new_device
         self._cfg.ollama.model = new_model
-        if self._diar_available and self._diar_var is not None:
-            self._cfg.diarization.enabled = bool(self._diar_var.get())
+        if self._diar_available and self._diar_combo is not None:
+            self._cfg.diarization.enabled = self._diar_combo.get() == "On"
 
         try:
             save_config(self._cfg)
