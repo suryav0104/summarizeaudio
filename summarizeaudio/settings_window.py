@@ -32,7 +32,7 @@ class SettingsWindow:
         self._win.withdraw()
         self._win.title("Settings")
         self._window_width = 480
-        self._window_height = 432 if startup.is_supported() else 360
+        self._window_height = 414 if startup.is_supported() else 360
         self._win.geometry(f"{self._window_width}x{self._window_height}")
         self._win.resizable(False, False)
         self._win.configure(bg="white")
@@ -171,18 +171,21 @@ class SettingsWindow:
         self._diar_row.pack(anchor="w", fill="x", pady=(0, 12))
         self._render_diarization_row()
 
-        # Open at Login (macOS only)
+        # Open at Login (macOS only). Heading mirrors the Speaker Diarization
+        # row: a bold title plus a light parenthetical caption on the same line.
         if startup.is_supported():
-            ttk.Label(body, text="Open at Login", style="Step.TLabel").pack(anchor="w")
+            startup_heading = ttk.Frame(body, style="SummarizeAudio.TFrame")
+            startup_heading.pack(anchor="w")
+            ttk.Label(startup_heading, text="Open at Login", style="Step.TLabel").pack(side="left")
+            ttk.Label(
+                startup_heading, text=" (Applies at your next login)", style="Hint.TLabel"
+            ).pack(side="left", anchor="s", pady=(0, 2))
             self._startup_combo = ttk.Combobox(
                 body, state="readonly", width=combo_width, values=["On", "Off"],
             )
             self._startup_combo.set("On" if startup.is_enabled() else "Off")
-            self._startup_combo.pack(anchor="w", pady=(4, 0))
+            self._startup_combo.pack(anchor="w", pady=(4, 14))
             self._bind_arrow_stepping(self._startup_combo)
-            ttk.Label(
-                body, text="Applies at your next login.", style="Hint.TLabel",
-            ).pack(anchor="w", pady=(2, 14))
 
         if self._pipeline_active:
             banner = tk.Frame(body, bg="#fde68a")
