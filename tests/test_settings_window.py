@@ -479,3 +479,26 @@ def test_step_combo_noop_on_disabled(root, tmp_path):
         before = combo.get()
         win._step_combo(combo, 1)
         assert combo.get() == before
+
+
+def test_launch_at_login_row_renders_when_supported(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: True)
+    monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: True)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        assert win._startup_combo is not None
+        assert list(win._startup_combo["values"]) == ["On", "Off"]
+        assert win._startup_combo.get() == "On"
+
+
+def test_launch_at_login_row_absent_when_unsupported(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: False)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        assert win._startup_combo is None

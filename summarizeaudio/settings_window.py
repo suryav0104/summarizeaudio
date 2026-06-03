@@ -8,7 +8,7 @@ from tkinter import ttk
 import sounddevice as sd
 from dotenv import load_dotenv
 
-from summarizeaudio import diarization
+from summarizeaudio import diarization, startup
 from summarizeaudio.config import AppConfig, save_config
 from summarizeaudio.ollama_client import ModelInfo, list_installed_models
 
@@ -34,7 +34,7 @@ class SettingsWindow:
         self._win.withdraw()
         self._win.title("Settings")
         self._window_width = 480
-        self._window_height = 360
+        self._window_height = 432 if startup.is_supported() else 360
         self._win.geometry(f"{self._window_width}x{self._window_height}")
         self._win.resizable(False, False)
         self._win.configure(bg="white")
@@ -103,6 +103,9 @@ class SettingsWindow:
         self._diar_focus_widget: tk.Widget | None = None
         self._diar_recheck_note: tk.Label | None = None
 
+        # Launch-at-login row state (macOS only; None when unsupported).
+        self._startup_combo: ttk.Combobox | None = None
+
         self._build()
 
     # ── Build ───────────────────────────────────────────────────────────────
@@ -170,6 +173,19 @@ class SettingsWindow:
         self._diar_row = ttk.Frame(body, style="SummarizeAudio.TFrame")
         self._diar_row.pack(anchor="w", fill="x", pady=(0, 12))
         self._render_diarization_row()
+
+        # Launch at Login (macOS only)
+        if startup.is_supported():
+            ttk.Label(body, text="Launch at Login", style="Step.TLabel").pack(anchor="w")
+            self._startup_combo = ttk.Combobox(
+                body, state="readonly", width=combo_width, values=["On", "Off"],
+            )
+            self._startup_combo.set("On" if startup.is_enabled() else "Off")
+            self._startup_combo.pack(anchor="w", pady=(4, 0))
+            self._bind_arrow_stepping(self._startup_combo)
+            ttk.Label(
+                body, text="Applies at your next login.", style="Hint.TLabel",
+            ).pack(anchor="w", pady=(2, 14))
 
         if self._pipeline_active:
             banner = tk.Frame(body, bg="#fde68a")
