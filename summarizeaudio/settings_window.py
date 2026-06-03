@@ -575,6 +575,18 @@ class SettingsWindow:
                 self._error_label.configure(text=f"Failed to save settings: {exc}")
             return
 
+        if self._startup_combo is not None:
+            want = self._startup_combo.get() == "On"
+            if want != startup.is_enabled():
+                try:
+                    startup.enable() if want else startup.disable()
+                except OSError as exc:
+                    if self._error_label is not None:
+                        self._error_label.configure(
+                            text=f"Failed to update launch at login: {exc}"
+                        )
+                    return
+
         try:
             self._ui_queue.put_nowait(("rebuild_tray_menu",))
         except Exception:

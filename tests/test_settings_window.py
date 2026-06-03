@@ -502,3 +502,73 @@ def test_launch_at_login_row_absent_when_unsupported(root, tmp_path, monkeypatch
         win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
         win.show()
         assert win._startup_combo is None
+
+
+def _startup_recorder(monkeypatch):
+    """Replace startup.enable/disable with recorders; return the calls list."""
+    calls = []
+    monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: True)
+    monkeypatch.setattr("summarizeaudio.startup.enable", lambda: calls.append("enable"))
+    monkeypatch.setattr("summarizeaudio.startup.disable", lambda: calls.append("disable"))
+    return calls
+
+
+def test_apply_enables_startup_when_toggled_on(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    calls = _startup_recorder(monkeypatch)
+    monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: False)  # currently off
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        win._startup_combo.set("On")
+        win._on_apply()
+    assert calls == ["enable"]
+
+
+def test_apply_disables_startup_when_toggled_off(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    calls = _startup_recorder(monkeypatch)
+    monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: True)  # currently on
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        win._startup_combo.set("Off")
+        win._on_apply()
+    assert calls == ["disable"]
+
+
+def test_apply_leaves_startup_untouched_when_unchanged(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    calls = _startup_recorder(monkeypatch)
+    monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: True)  # already on
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        win._startup_combo.set("On")  # unchanged
+        win._on_apply()
+    assert calls == []
+
+
+def test_apply_surfaces_startup_oserror_in_error_label(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: True)
+    monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: False)  # currently off
+
+    def _boom():
+        raise OSError("disk full")
+
+    monkeypatch.setattr("summarizeaudio.startup.enable", _boom)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        win._startup_combo.set("On")  # changed -> triggers enable() -> OSError
+        win._on_apply()
+        assert "Failed to update launch at login" in win._error_label.cget("text")
