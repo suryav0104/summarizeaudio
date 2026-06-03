@@ -54,6 +54,19 @@ def _capsule_coords(
     return (rect, left, right)
 
 
+# Diarization sub-steps in the fixed order pyannote emits them. The labels are
+# single words so all four fit one row in the sub-step stepper at ~480px. Only
+# "embeddings" reports a measurable fraction; the rest tick by instantly.
+_DIARIZATION_SUBSTEPS: tuple[tuple[str, str], ...] = (
+    ("segmentation", "Segments"),
+    ("speaker_counting", "Speakers"),
+    ("embeddings", "Voices"),
+    ("discrete_diarization", "Assign"),
+)
+_DIARIZATION_SUBSTEP_LABELS = [label for _, label in _DIARIZATION_SUBSTEPS]
+_DIARIZATION_SUBSTEP_ORDER = {key: i for i, (key, _) in enumerate(_DIARIZATION_SUBSTEPS)}
+
+
 class _MarqueeProgress:
     def __init__(
         self,
@@ -290,6 +303,15 @@ class _StepIndicator:
             return
         self._draw(w)
 
+    def set_progress(self, current_index: int, step_elapsed: dict[int, str]) -> None:
+        """Advance the active step and refresh per-step elapsed labels in place.
+
+        Used by the diarization handler to update the sub-step stepper without a
+        full window re-render, which would reset the bouncing bar beneath it."""
+        self._current = current_index
+        self._step_elapsed = step_elapsed
+        self._draw(self._last_width or self._base_width)
+
     def _draw(self, width: int) -> None:
         self._last_width = width
         self._canvas.delete("all")
@@ -404,6 +426,11 @@ class WorkflowWindow:
         self._elapsed_tick_id: str | None = None
         self._timing_step: str | None = None
         self._elapsed_var = tk.StringVar(value="")
+        # Diarization sub-step stepper state (mirrors the top step indicator).
+        self._diar_stepper: _StepIndicator | None = None
+        self._diar_substep_index: int = 0
+        self._diar_substep_start: float | None = None
+        self._diar_substep_durations: dict[int, str] = {}
 
         style = ttk.Style()
         try:
@@ -710,6 +737,21 @@ class WorkflowWindow:
 
         if self._state == "processing":
             progress_width = max(self._window_width - 80, 400)
+            if self._step_state == "diarizing":
+                # Sub-step stepper above the bar, mirroring the top indicator.
+                # step_elapsed is passed (even when empty) so the canvas reserves
+                # the taller height up front and the layout doesn't jump when the
+                # first per-sub-step duration appears.
+                self._diar_stepper = _StepIndicator(
+                    body,
+                    steps=_DIARIZATION_SUBSTEP_LABELS,
+                    current_index=self._diar_substep_index,
+                    width=self._window_width - 80,
+                    step_elapsed=self._diar_substep_durations,
+                )
+                self._diar_stepper.pack(fill="x", pady=(0, 8))
+            else:
+                self._diar_stepper = None
             if self._step_state in {"summarizing", "diarizing"}:
                 self._det_progress_bar = None
                 self._progress = _MarqueeProgress(
@@ -740,6 +782,7 @@ class WorkflowWindow:
         else:
             self._progress = None
             self._det_progress_bar = None
+            self._diar_stepper = None
 
         if self._state == "chooser":
             self._render_chooser(body)
@@ -768,13 +811,9 @@ class WorkflowWindow:
     def _render_processing(self, body: ttk.Frame) -> None:
         if self._step_state == "diarizing":
             self._title.set("Diarizing")
-            self._subtitle.set("Identifying and labeling individual speakers.")
+            self._subtitle.set("Separating speakers in the audio.")
             self._status.set("Diarize the audio")
-            self._detail_text_var.set(
-                "Matching each transcript segment to the speakers detected in the "
-                "audio. This runs on the CPU and is slow. Expect it to take roughly "
-                "as long as the recording itself, sometimes several minutes."
-            )
+            self._detail_text_var.set("Usually takes about as long as the recording.")
         elif self._step_state == "summarizing":
             self._title.set("Summarizing")
             self._subtitle.set("Generating a summary from the transcript.")
@@ -1179,23 +1218,39 @@ class WorkflowWindow:
                 self._progress.set_percent(pct)
         elif kind == "diarization_progress":
             _, step_name, fraction = item
-            # Drive only the progress bar; the expectation message in the detail
-            # line stays put and the step timer keeps running because we never
-            # touch them or re-render. The measurable embeddings pass fills the
-            # bar with a centered percent; every other sub-step reports no
-            # fraction and falls back to the bouncing marquee. A late item that
-            # arrives after the phase advanced is dropped by the state guard.
-            if self._step_state == "diarizing" and self._progress is not None:
-                if fraction is None:
-                    self._progress.to_marquee()
-                else:
-                    self._progress.to_determinate(fraction * 100.0)
+            # Drive the sub-step stepper and the bar in place; the trimmed detail
+            # line stays put and the overall step timer keeps running because we
+            # never touch them or re-render. Advancing to a new sub-step records
+            # the elapsed time of the one just left behind (same model as the top
+            # step indicator). The measurable embeddings pass fills the bar with a
+            # centered percent; every other sub-step reports no fraction and falls
+            # back to the bouncing marquee. A late item that arrives after the
+            # phase advanced is dropped by the state guard.
+            if self._step_state == "diarizing":
+                idx = _DIARIZATION_SUBSTEP_ORDER.get(step_name)
+                if idx is not None:
+                    if idx != self._diar_substep_index:
+                        self._record_diar_substep(self._diar_substep_index)
+                        self._diar_substep_index = idx
+                        self._diar_substep_start = time.time()
+                    if self._diar_stepper is not None:
+                        self._diar_stepper.set_progress(
+                            self._diar_substep_index, self._diar_substep_durations
+                        )
+                if self._progress is not None:
+                    if fraction is None:
+                        self._progress.to_marquee()
+                    else:
+                        self._progress.to_determinate(fraction * 100.0)
         elif kind == "workflow_phase":
             _, phase = item
             if phase == "diarizing":
                 self._finish_step_timer()
                 self._step_state = "diarizing"
                 self._state = "processing"
+                self._diar_substep_index = 0
+                self._diar_substep_durations = {}
+                self._diar_substep_start = time.time()
                 self._start_step_timer("diarizing")
                 self._render()
                 self._raise_window()
@@ -1263,6 +1318,14 @@ class WorkflowWindow:
         self._step_start_time = time.time()
         self._elapsed_var.set("00:00 min")
         self._elapsed_tick_id = self._win.after(1000, self._elapsed_tick)
+
+    def _record_diar_substep(self, index: int) -> None:
+        """Record the elapsed time for a diarization sub-step that just finished,
+        keyed by its index, in the same MM:SS format the top stepper uses."""
+        if self._diar_substep_start is None:
+            return
+        elapsed = time.time() - self._diar_substep_start
+        self._diar_substep_durations[index] = self._fmt_elapsed(elapsed)
 
     def _finish_step_timer(self) -> None:
         self._cancel_elapsed_tick()

@@ -720,10 +720,10 @@ def test_name_dialog_banks_active_phase_and_stops_timing(tmp_path, monkeypatch):
     assert win._step_start_time is None
 
 
-def test_diarizing_detail_sets_time_expectation(tmp_path, monkeypatch):
-    """Before any percent arrives, the Diarize step must set the expectation
-    that it is slow (CPU-bound, roughly the length of the audio), so a multi-
-    minute wait does not look like a hang."""
+def test_diarizing_detail_is_short_and_light(tmp_path, monkeypatch):
+    """The Diarize step now carries its live progress in the sub-step stepper, so
+    the detail line is trimmed to one short sentence (no CPU/minutes paragraph)
+    and the subtitle is the concise 'Separating speakers' copy."""
     monkeypatch.setattr("summarizeaudio.workflow_window.Pipeline", lambda cfg, ui_queue: SimpleNamespace(run=lambda **kwargs: None))
     fake_root = FakeRoot()
     monkeypatch.setattr("summarizeaudio.workflow_window.tk.Toplevel", lambda root: fake_root)
@@ -737,8 +737,13 @@ def test_diarizing_detail_sets_time_expectation(tmp_path, monkeypatch):
     win._status = FakeStringVar()
     win._step_state = "diarizing"
     win._render_processing(FakeFrame())
+    detail = win._detail_text_var.get()
     assert win._status.get() == "Diarize the audio"
-    assert "minute" in win._detail_text_var.get().lower()
+    assert win._subtitle.get() == "Separating speakers in the audio."
+    assert "recording" in detail.lower()
+    assert "cpu" not in detail.lower()
+    assert "minute" not in detail.lower()
+    assert len(detail) <= 60
 
 
 @pytest.fixture
@@ -784,6 +789,20 @@ def test_marquee_to_marquee_resumes_bounce(tk_root):
     assert bar._running is True
 
 
+def test_step_indicator_set_progress_updates_current_and_elapsed(tk_root):
+    """The stepper supports in-place updates so the diarization handler can
+    advance the active sub-step and fill in per-sub-step elapsed labels without
+    a full window re-render (which would reset the bouncing bar below it)."""
+    from summarizeaudio.workflow_window import _StepIndicator
+    ind = _StepIndicator(
+        tk_root, steps=["A", "B", "C", "D"], current_index=0, width=400, step_elapsed={}
+    )
+    ind.pack()
+    ind.set_progress(2, {0: "00:05 min", 1: "00:03 min"})
+    assert ind._current == 2
+    assert ind._step_elapsed == {0: "00:05 min", 1: "00:03 min"}
+
+
 class _FakeProgress:
     def __init__(self):
         self.calls = []
@@ -795,47 +814,90 @@ class _FakeProgress:
         self.calls.append(("marquee",))
 
 
-def test_handle_diarization_progress_fills_bar_for_measurable_step():
-    """A measurable fraction switches the bar to the in-bar percent display,
-    leaves the expectation detail text untouched, keeps the step timer running,
-    and does NOT re-render (re-rendering would reset the bar)."""
+class _FakeStepper:
+    def __init__(self):
+        self.calls = []
+
+    def set_progress(self, current_index, step_elapsed):
+        self.calls.append((current_index, dict(step_elapsed)))
+
+
+def _diarizing_window():
+    """A bare window pre-seeded with the diarization sub-step state the handler
+    mutates, so each handler test starts from a clean 'first sub-step' baseline."""
     win = _bare_window(None, "record")
     win._step_state = "diarizing"
     win._detail_text_var = FakeStringVar("expectation message")
     win._progress = _FakeProgress()
+    win._diar_stepper = _FakeStepper()
+    win._diar_substep_index = 0
+    win._diar_substep_start = 100.0
+    win._diar_substep_durations = {}
     win._step_start_time = 1234.0
-    rendered = []
-    win._render = lambda: rendered.append(True)
+    win._render = lambda: win.__dict__.setdefault("_rendered", []).append(True)
+    return win
+
+
+def test_handle_diarization_progress_fills_bar_for_measurable_step():
+    """The measurable embeddings fraction fills the bar with a percent, advances
+    the sub-step stepper to the embeddings sub-step (index 2), leaves the detail
+    text and the step timer untouched, and does NOT re-render."""
+    win = _diarizing_window()
     win._handle_item(("diarization_progress", "embeddings", 0.5))
     assert win._progress.calls == [("determinate", 50.0)]
+    assert win._diar_substep_index == 2
+    assert win._diar_stepper.calls[-1][0] == 2
+    assert 0 in win._diar_substep_durations  # the sub-step left behind got timed
     assert win._detail_text_var.get() == "expectation message"
     assert win._step_start_time == 1234.0
-    assert rendered == []
+    assert win.__dict__.get("_rendered", []) == []
 
 
 def test_handle_diarization_progress_bounces_bar_for_unmeasurable_step():
-    """A step that reports no fraction switches the bar back to the bouncing
-    marquee, and still leaves the expectation message in place."""
-    win = _bare_window(None, "record")
-    win._step_state = "diarizing"
-    win._detail_text_var = FakeStringVar("expectation message")
-    win._progress = _FakeProgress()
-    win._render = lambda: None
+    """The first sub-step (segmentation) reports no fraction: the bar bounces,
+    the stepper highlights index 0, and no duration is recorded yet because no
+    sub-step has been left behind."""
+    win = _diarizing_window()
     win._handle_item(("diarization_progress", "segmentation", None))
     assert win._progress.calls == [("marquee",)]
+    assert win._diar_substep_index == 0
+    assert win._diar_substep_durations == {}
+    assert win._diar_stepper.calls == [(0, {})]
     assert win._detail_text_var.get() == "expectation message"
+
+
+def test_handle_diarization_progress_records_duration_on_advance():
+    """Advancing from one sub-step to the next records the elapsed time of the
+    sub-step just completed and moves the stepper's active index forward."""
+    win = _diarizing_window()
+    win._handle_item(("diarization_progress", "speaker_counting", None))
+    assert win._diar_substep_index == 1
+    assert 0 in win._diar_substep_durations
+    assert win._diar_stepper.calls[-1][0] == 1
+
+
+def test_handle_diarization_progress_repeat_step_does_not_rerecord():
+    """Repeated events for the same (embeddings) sub-step update only the bar;
+    the active sub-step is never timed until it is left behind."""
+    win = _diarizing_window()
+    win._diar_substep_index = 2
+    win._diar_substep_durations = {0: "00:05 min", 1: "00:03 min"}
+    win._handle_item(("diarization_progress", "embeddings", 0.3))
+    win._handle_item(("diarization_progress", "embeddings", 0.6))
+    assert win._diar_substep_index == 2
+    assert 2 not in win._diar_substep_durations
+    assert win._progress.calls == [("determinate", 30.0), ("determinate", 60.0)]
 
 
 def test_handle_diarization_progress_ignored_when_not_diarizing():
     """A late progress item that arrives after the phase moved on must not touch
-    the bar or the detail line."""
-    win = _bare_window(None, "record")
+    the bar, the stepper, or the detail line."""
+    win = _diarizing_window()
     win._step_state = "summarizing"
     win._detail_text_var = FakeStringVar("summary detail")
-    win._progress = _FakeProgress()
-    win._render = lambda: None
     win._handle_item(("diarization_progress", "embeddings", 0.5))
     assert win._progress.calls == []
+    assert win._diar_stepper.calls == []
     assert win._detail_text_var.get() == "summary detail"
 
 
