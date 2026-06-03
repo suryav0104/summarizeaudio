@@ -10,6 +10,7 @@ import pytest
 from summarizeaudio.config import (
     AppConfig,
     BehaviorConfig,
+    DiarizationConfig,
     OllamaConfig,
     RecordingConfig,
     StorageConfig,
@@ -27,6 +28,7 @@ def _cfg(tmp_path: Path, model: str = "gemma3:4b", device: str | None = None) ->
         summarization=SummarizationConfig(default_prompt="x"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=device),
+        diarization=DiarizationConfig(enabled=False),
     )
 
 
@@ -266,3 +268,102 @@ def test_banner_visible_only_when_pipeline_active(root, tmp_path):
 
     assert not has_banner(win_inactive)
     assert has_banner(win_active)
+
+
+def test_diarization_toggle_visible_when_available_and_apply_persists(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    saved = []
+    monkeypatch.setattr(
+        "summarizeaudio.settings_window.save_config",
+        lambda cfg: saved.append(cfg.diarization.enabled),
+    )
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        cfg = _cfg(tmp_path)
+        cfg.diarization.enabled = False
+        win = SettingsWindow(root, cfg, queue.Queue())
+        win.show()
+        assert win._diar_available is True
+        assert win._diar_var is not None
+        assert win._diar_var.get() is False
+        win._diar_var.set(True)
+        win._on_apply()
+    assert cfg.diarization.enabled is True
+    assert saved == [True]
+
+
+def test_diarization_unavailable_shows_link_not_toggle(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.save_config", lambda cfg: None)
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        cfg = _cfg(tmp_path)
+        cfg.diarization.enabled = True  # stale preference; capability is gone
+        win = SettingsWindow(root, cfg, queue.Queue())
+        win.show()
+        assert win._diar_available is False
+        assert win._diar_var is None
+        assert win._diar_link is not None
+        assert win._diar_steps_visible is False
+        win._on_apply()
+    # Diarization being unavailable must not block Apply, and must not silently
+    # flip the stored preference — runtime gating handles the capability.
+    assert cfg.diarization.enabled is True
+    assert win._apply_disabled is False
+
+
+def test_how_to_enable_link_expands_steps(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        assert win._diar_steps_visible is False
+        win._on_diar_how_to_enable()
+        assert win._diar_steps_visible is True
+        assert "HuggingFace" in win._diar_steps_text
+
+
+def test_recheck_reloads_env_and_shows_toggle_when_available(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    calls = {"dotenv": 0}
+
+    def fake_load_dotenv(override=False):
+        calls["dotenv"] += 1
+        return True
+
+    monkeypatch.setattr("summarizeaudio.settings_window.load_dotenv", fake_load_dotenv)
+    states = iter([False, True])  # build → unavailable, re-check → available
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: next(states))
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        assert win._diar_available is False
+        win._on_diar_how_to_enable()
+        win._on_diar_recheck()
+    assert calls["dotenv"] == 1
+    assert win._diar_available is True
+    assert win._diar_var is not None
+
+
+def test_recheck_keeps_steps_and_shows_note_when_still_unavailable(root, tmp_path, monkeypatch):
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.settings_window.load_dotenv", lambda override=False: True)
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        win._on_diar_how_to_enable()
+        assert win._diar_steps_visible is True
+        win._on_diar_recheck()
+    # Still unavailable: instructions must stay open and a note must explain why,
+    # instead of silently collapsing back to the bare link.
+    assert win._diar_available is False
+    assert win._diar_steps_visible is True
+    assert win._diar_recheck_note is not None
+    assert win._diar_recheck_note.cget("text") != ""

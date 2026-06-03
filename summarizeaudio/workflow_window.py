@@ -882,7 +882,8 @@ class WorkflowWindow:
         return f"Step {current + 1} of {len(steps)}"
 
     def _has_diarizer(self) -> bool:
-        return bool(os.environ.get("HUGGINGFACE_ACCESS_TOKEN"))
+        from summarizeaudio import diarization
+        return diarization.effective_enabled(self._cfg)
 
     def _steps_for_mode(self) -> list[str]:
         if self._mode == "record":

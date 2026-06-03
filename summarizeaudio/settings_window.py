@@ -6,7 +6,9 @@ import tkinter as tk
 from tkinter import ttk
 
 import sounddevice as sd
+from dotenv import load_dotenv
 
+from summarizeaudio import diarization
 from summarizeaudio.config import AppConfig, save_config
 from summarizeaudio.ollama_client import ModelInfo, list_installed_models
 
@@ -83,6 +85,17 @@ class SettingsWindow:
         self._model_list: list[ModelInfo] | None = None
         self._apply_disabled: bool = False
 
+        # Diarization row state.
+        self._diar_row: ttk.Frame | None = None
+        self._diar_available: bool = False
+        self._diar_var: tk.BooleanVar | None = None
+        self._diar_link: tk.Label | None = None
+        self._diar_steps_frame: tk.Frame | None = None
+        self._diar_steps_visible: bool = False
+        self._diar_steps_text: str = ""
+        self._diar_focus_widget: tk.Widget | None = None
+        self._diar_recheck_note: tk.Label | None = None
+
         self._build()
 
     # ── Build ───────────────────────────────────────────────────────────────
@@ -140,6 +153,11 @@ class SettingsWindow:
             self._model_combo["values"] = model_values
             self._model_combo.set(model_initial)
         self._model_combo.pack(anchor="w", pady=(4, 14))
+
+        # Speaker Diarization
+        self._diar_row = ttk.Frame(body, style="SummarizeAudio.TFrame")
+        self._diar_row.pack(anchor="w", fill="x", pady=(0, 12))
+        self._render_diarization_row()
 
         if self._pipeline_active:
             banner = tk.Frame(body, bg="#fde68a")
@@ -233,6 +251,106 @@ class SettingsWindow:
             except Exception:
                 pass
 
+    # ── Diarization row ─────────────────────────────────────────────────────
+    def _render_diarization_row(self, available: bool | None = None) -> None:
+        """(Re)build the diarization row from current capability.
+
+        Probes diarization.is_available() (unless the caller passes a value it
+        already probed). When available we show a toggle bound to the stored
+        preference; otherwise an "Unavailable" label plus a "How to enable" link
+        that expands the shared setup steps.
+        """
+        assert self._diar_row is not None
+        for child in self._diar_row.winfo_children():
+            child.destroy()
+        self._diar_var = None
+        self._diar_link = None
+        self._diar_steps_frame = None
+        self._diar_steps_visible = False
+        self._diar_recheck_note = None
+        self._diar_available = (
+            diarization.is_available() if available is None else available
+        )
+
+        ttk.Label(self._diar_row, text="Speaker Diarization", style="Step.TLabel").pack(anchor="w")
+
+        if self._diar_available:
+            self._diar_var = tk.BooleanVar(value=bool(self._cfg.diarization.enabled))
+            chk = ttk.Checkbutton(
+                self._diar_row,
+                text="Label speakers in transcripts",
+                variable=self._diar_var,
+            )
+            chk.pack(anchor="w", pady=(4, 0))
+            self._diar_focus_widget = chk
+            self._resize_for_steps(False)
+            return
+
+        status = tk.Frame(self._diar_row, bg="white")
+        status.pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            status, text="Unavailable", bg="white", fg="#92400e",
+            font=("Helvetica Neue", 11),
+        ).pack(side="left")
+        self._diar_link = tk.Label(
+            status, text="How to enable", bg="white", fg="#2563eb",
+            font=("Helvetica Neue", 11, "underline"),
+        )
+        self._diar_link.pack(side="left", padx=(8, 0))
+        self._diar_link.bind("<Button-1>", lambda _e: self._on_diar_how_to_enable())
+        self._diar_focus_widget = self._diar_link
+        self._resize_for_steps(False)
+
+    def _on_diar_how_to_enable(self) -> None:
+        if self._diar_steps_visible or self._diar_row is None:
+            return
+        self._diar_steps_text = diarization.render_setup_steps("window")
+        frame = tk.Frame(self._diar_row, bg="#f6f8fc")
+        frame.pack(fill="x", pady=(8, 0))
+        tk.Label(
+            frame, text=self._diar_steps_text, bg="#f6f8fc", fg="#1a2030",
+            font=("Helvetica Neue", 10), justify="left", wraplength=410,
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+        recheck = self._button(frame, text="Re-check", command=self._on_diar_recheck, primary=False)
+        recheck.pack(anchor="w", padx=10, pady=(0, 8))
+        self._diar_recheck_note = tk.Label(
+            frame, text="", bg="#f6f8fc", fg="#92400e",
+            font=("Helvetica Neue", 10), justify="left", wraplength=410,
+        )
+        self._diar_recheck_note.pack(anchor="w", padx=10, pady=(0, 8))
+        self._diar_steps_frame = frame
+        self._diar_steps_visible = True
+        self._resize_for_steps(True)
+
+    def _on_diar_recheck(self) -> None:
+        # .env is loaded once at startup; override=True picks up a token the user
+        # pasted after launch so "Re-check" works without relaunching.
+        load_dotenv(override=True)
+        if diarization.is_available():
+            # Capability arrived — swap the whole row to the toggle.
+            self._render_diarization_row(available=True)
+            return
+        # Still unavailable: keep the instructions on screen and say what's missing
+        # rather than silently collapsing back to the bare link.
+        reason = diarization.missing_reason() or "still unavailable"
+        if self._diar_recheck_note is not None:
+            self._diar_recheck_note.configure(text=f"Still unavailable — {reason}.")
+
+    def _resize_for_steps(self, expanded: bool) -> None:
+        try:
+            if not self._win.winfo_ismapped():
+                return
+            w = self._window_width
+            h = self._window_height + (240 if expanded else 0)
+            self._win.update_idletasks()
+            sw = self._win.winfo_screenwidth()
+            sh = self._win.winfo_screenheight()
+            x = max((sw - w) // 2, 0)
+            y = max((sh - h) // 2, 0)
+            self._win.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
     # ── Pure value computation (no widget side-effects) ─────────────────────
     def _compute_input_devices(self) -> tuple[list[str], str]:
         configured = self._cfg.recording.input_device or ""
@@ -305,6 +423,13 @@ class SettingsWindow:
             combo = self._input_combo
         elif target == "model":
             combo = self._model_combo
+        elif target == "diarization":
+            if self._diar_focus_widget is not None:
+                try:
+                    self._diar_focus_widget.focus_set()
+                except Exception:
+                    pass
+            return
         if combo is not None:
             try:
                 combo.focus_set()
@@ -348,6 +473,7 @@ class SettingsWindow:
             return
         old_device = self._cfg.recording.input_device
         old_model = self._cfg.ollama.model
+        old_diar = self._cfg.diarization.enabled
 
         assert self._input_combo is not None
         assert self._model_combo is not None
@@ -370,12 +496,15 @@ class SettingsWindow:
 
         self._cfg.recording.input_device = new_device
         self._cfg.ollama.model = new_model
+        if self._diar_available and self._diar_var is not None:
+            self._cfg.diarization.enabled = bool(self._diar_var.get())
 
         try:
             save_config(self._cfg)
         except Exception as exc:
             self._cfg.recording.input_device = old_device
             self._cfg.ollama.model = old_model
+            self._cfg.diarization.enabled = old_diar
             if self._error_label is not None:
                 self._error_label.configure(text=f"Failed to save settings: {exc}")
             return

@@ -70,3 +70,19 @@ Some devices appear with `max_input_channels=0` (output-only) and must be filter
 
 ### `check_input_health()` blocks ~1.5–3s — never call it synchronously on a UI-triggered action
 The device probe opens an `sd.InputStream` and `sd.sleep(INPUT_HEALTH_SAMPLE_SECONDS * 1000)` (1.5s) to capture a signal sample, plus stream setup overhead, so each call costs ~1.5–3s. `_on_start_recording` originally ran it synchronously on the pystray callback thread as a pre-start gate *before* `recorder.start()` and the `("set_icon","recording")` enqueue — so clicking Record stalled ~2–3s before recording (and the icon animation) actually began. Live symptom: "2-3 seconds before the icon starts animating when I click Record." Fix: drop the synchronous pre-start probe entirely and rely on the existing async post-start check (`_run_recording_input_health_check` worker → `_handle_recording_input_health`), which is authoritative — it stops the recorder, deletes the wav, reverts the icon, and notifies if the device turns out bad. Behavior tradeoff: a bad device now starts recording, then auto-stops ~1.5s later with the same notification, instead of never starting. The healthy path (the norm) starts instantly. Bonus: removed a duplicate per-record probe (we used to sample the device twice — once sync pre-start, once async post-start).
+
+---
+
+## Diarization (pyannote.audio)
+
+### A lazy import makes `except ImportError` dead code
+`diarizer.py` imports pyannote inside `Diarizer._load()`, not at module top. So `Diarizer(token)` never raises `ImportError`, and the pipeline's `try: Diarizer(...) except ImportError: ...` "graceful degrade" guard never fired. With a token set but pyannote not installed, the workflow showed a phantom "Diarize" step and crashed mid-transcription only when `_load()` finally ran the import. Lesson: a guard around a constructor only catches errors the constructor actually raises — if the heavy import is deferred, the guard must wrap the deferred call, or (better) detect capability up front. We now use `importlib.util.find_spec("pyannote.audio")` to detect the package WITHOUT importing torch, in `diarization.is_available()`.
+
+### `find_spec` detects a package without importing it
+`importlib.util.find_spec("pyannote.audio") is not None` is true when the package is installed but does NOT import it (so no torch load, no multi-second penalty, no side effects). This is the right probe for an optional heavy dependency you want to gate on cheaply at startup and on every Settings open.
+
+### `load_dotenv()` runs once at startup — a token pasted later is invisible until override
+`__main__.py` calls `load_dotenv()` once at process start. Editing `.env` mid-session (e.g. pasting a HuggingFace token while the app is running) does NOT update `os.environ`, because the default `load_dotenv()` will not overwrite variables already set in the environment, and more importantly is not re-invoked. The Settings "Re-check" button calls `load_dotenv(override=True)` to force a re-read of `.env` into `os.environ`, then re-probes `is_available()`. Without `override=True`, a previously-unset var loads but an already-set one would not refresh.
+
+### Honest token detection: a non-empty placeholder fools `bool(os.environ.get(...))`
+`token_present()` is `bool(os.environ.get("HUGGINGFACE_ACCESS_TOKEN"))`. If the `.env` scaffold ships `HUGGINGFACE_ACCESS_TOKEN=hf_replace_me`, that is a non-empty value, so the check returns True and the app reports diarization "available" when it is not. Fix: ship the scaffold line commented out (`#HUGGINGFACE_ACCESS_TOKEN=...`) so nothing is exported until the user uncomments and fills it. The installer's `real_hf_token_present()` shell helper applies the same rule (uncommented, non-placeholder, non-empty) before writing `enabled = true`.

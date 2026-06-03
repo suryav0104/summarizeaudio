@@ -14,7 +14,7 @@ from summarizeaudio import sessions as session_store
 from summarizeaudio.pipeline import Pipeline, PipelineMode, _derive_default_name
 from summarizeaudio.config import (
     AppConfig, StorageConfig, WhisperConfig, OllamaConfig,
-    SummarizationConfig, BehaviorConfig, RecordingConfig,
+    SummarizationConfig, BehaviorConfig, RecordingConfig, DiarizationConfig,
 )
 from summarizeaudio.sessions import load_sessions
 
@@ -31,7 +31,37 @@ def make_config(tmp_output):
         summarization=SummarizationConfig(default_prompt="Summarize: {transcript}"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=None),
+        diarization=DiarizationConfig(enabled=False),
     )
+
+
+def test_build_diarizer_none_when_config_disabled(tmp_path, monkeypatch):
+    from summarizeaudio import pipeline, diarization
+    monkeypatch.setattr(diarization, "is_available", lambda: True)
+    monkeypatch.setenv("HUGGINGFACE_ACCESS_TOKEN", "hf_real")
+    cfg = make_config(tmp_path)
+    cfg.diarization.enabled = False
+    assert pipeline.build_diarizer(cfg) is None
+
+
+def test_build_diarizer_none_when_unavailable(tmp_path, monkeypatch):
+    # Preference on but pyannote missing — must NOT build a diarizer (the bug fix).
+    from summarizeaudio import pipeline, diarization
+    monkeypatch.setattr(diarization, "is_available", lambda: False)
+    monkeypatch.setenv("HUGGINGFACE_ACCESS_TOKEN", "hf_real")
+    cfg = make_config(tmp_path)
+    cfg.diarization.enabled = True
+    assert pipeline.build_diarizer(cfg) is None
+
+
+def test_build_diarizer_built_when_enabled_and_available(tmp_path, monkeypatch):
+    from summarizeaudio import pipeline, diarization
+    from summarizeaudio.diarizer import Diarizer
+    monkeypatch.setattr(diarization, "is_available", lambda: True)
+    monkeypatch.setenv("HUGGINGFACE_ACCESS_TOKEN", "hf_real")
+    cfg = make_config(tmp_path)
+    cfg.diarization.enabled = True
+    assert isinstance(pipeline.build_diarizer(cfg), Diarizer)
 
 
 def make_silence_mp3(path: Path) -> Path:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from summarizeaudio.config import (
     AppConfig,
     BehaviorConfig,
+    DiarizationConfig,
     OllamaConfig,
     RecordingConfig,
     StorageConfig,
@@ -24,6 +25,7 @@ def make_config(tmp_path: Path, model: str) -> AppConfig:
         summarization=SummarizationConfig(default_prompt="Summarize: {transcript}"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=None),
+        diarization=DiarizationConfig(enabled=False),
     )
 
 
@@ -643,6 +645,58 @@ def test_model_status_click_enqueues_show_settings_with_model_target(tmp_path, m
     app = TrayApp()
     app._on_settings_click_model(None, None)
     assert app._ui_queue.get_nowait() == ("show_settings", "model")
+
+
+def test_diarization_label_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    app = TrayApp()
+    app._cfg.diarization.enabled = True  # preference on but capability gone
+    assert app._diarization_label() == "Diarization  \u2192  Unavailable"
+
+
+def test_diarization_label_on_and_off(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
+    app = TrayApp()
+    app._cfg.diarization.enabled = True
+    assert app._diarization_label() == "Diarization  \u2192  On"
+    app._cfg.diarization.enabled = False
+    assert app._diarization_label() == "Diarization  \u2192  Off"
+
+
+def test_rebuild_menu_has_diarization_item(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: "BlackHole 2ch")
+    app = TrayApp()
+    app._tray = SimpleNamespace(menu=None)
+    app._rebuild_menu()
+    texts = [getattr(item, "text", "") for item in app._tray.menu.items]
+    assert "Diarization  \u2192  Unavailable" in texts
+
+
+def test_diarization_status_click_enqueues_show_settings_with_target(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
+    monkeypatch.setattr(
+        "summarizeaudio.window_manager.WindowManager",
+        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
+    )
+    app = TrayApp()
+    app._on_settings_click_diarization(None, None)
+    assert app._ui_queue.get_nowait() == ("show_settings", "diarization")
 
 
 def test_on_rebuild_tray_request_calls_rebuild_menu(tmp_path, monkeypatch):

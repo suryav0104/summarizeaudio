@@ -23,6 +23,22 @@ from summarizeaudio.transcriber import Transcriber
 from summarizeaudio.sessions import create_session_record, session_by_id, session_source_key_exists, update_session_record
 
 
+def build_diarizer(cfg: AppConfig):
+    """Build a Diarizer only when the user enabled it AND it is actually available.
+
+    Returns None when diarization is disabled in config or the capability
+    (pyannote.audio + HuggingFace token) is missing. This is the single gate
+    that prevents the phantom "Diarize" step and the mid-transcription crash.
+    """
+    from summarizeaudio import diarization
+    if not diarization.effective_enabled(cfg):
+        return None
+    from summarizeaudio.diarizer import Diarizer
+    diarizer = Diarizer(os.environ[diarization.TOKEN_ENV_VAR])
+    log.info("Diarizer enabled (config on, pyannote installed, token present)")
+    return diarizer
+
+
 class _NameEvent:
     def __init__(self) -> None:
         self._event = threading.Event()
@@ -212,15 +228,7 @@ class Pipeline:
     ) -> None:
         cfg = self._cfg
         renamer = Renamer(cfg.storage.output_folder)
-        diarizer = None
-        hf_token = os.environ.get("HUGGINGFACE_ACCESS_TOKEN")
-        if hf_token:
-            try:
-                from summarizeaudio.diarizer import Diarizer
-                diarizer = Diarizer(hf_token)
-                log.info("Diarizer enabled (HuggingFace token found)")
-            except ImportError:
-                log.warning("pyannote.audio not installed — diarization disabled (pip install 'summarizeaudio[diarization]')")
+        diarizer = build_diarizer(cfg)
         transcriber = Transcriber(
             model=cfg.whisper.model,
             language=cfg.whisper.language,

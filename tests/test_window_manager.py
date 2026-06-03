@@ -8,6 +8,7 @@ from summarizeaudio import window_manager
 from summarizeaudio.config import (
     AppConfig,
     BehaviorConfig,
+    DiarizationConfig,
     OllamaConfig,
     RecordingConfig,
     StorageConfig,
@@ -36,6 +37,7 @@ def _make_cfg(tmp_path):
         summarization=SummarizationConfig(default_prompt="x"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=None),
+        diarization=DiarizationConfig(enabled=False),
     )
 
 

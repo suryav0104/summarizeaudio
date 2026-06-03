@@ -88,8 +88,8 @@ def memory_warning(cfg: "AppConfig", needs_transcription: bool = True) -> str | 
 
     ollama_gb  = _OLLAMA_RAM_GB.get(cfg.ollama.model, 4.0)
     whisper_gb = _WHISPER_RAM_GB.get(cfg.whisper.model, 1.0) if needs_transcription else 0.0
-    import os as _os
-    diarizer_gb = _DIARIZER_RAM_GB if (needs_transcription and _os.environ.get("HUGGINGFACE_ACCESS_TOKEN")) else 0.0
+    from summarizeaudio import diarization
+    diarizer_gb = _DIARIZER_RAM_GB if (needs_transcription and diarization.effective_enabled(cfg)) else 0.0
     needed_gb  = ollama_gb + whisper_gb + diarizer_gb + _OS_OVERHEAD_GB
 
     if total_gb >= needed_gb:
@@ -140,6 +140,11 @@ auto_open_summary = false
 # Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
 # Set to an exact device name to override, e.g. "Voice + System Audio" for an Aggregate Device.
 input_device = ""
+
+[diarization]
+# Speaker labelling. Only takes effect when pyannote.audio is installed and a
+# HuggingFace token is set; otherwise transcription runs without speaker labels.
+enabled = false
 """
 
 
@@ -181,6 +186,11 @@ class RecordingConfig:
 
 
 @dataclass
+class DiarizationConfig:
+    enabled: bool  # user preference only; capability is checked at runtime
+
+
+@dataclass
 class AppConfig:
     storage: StorageConfig
     whisper: WhisperConfig
@@ -188,6 +198,7 @@ class AppConfig:
     summarization: SummarizationConfig
     behavior: BehaviorConfig
     recording: RecordingConfig
+    diarization: DiarizationConfig
 
 
 class ConfigError(RuntimeError):
@@ -217,6 +228,7 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
     summ = raw.get("summarization", {})
     beh = raw.get("behavior", {})
     rec = raw.get("recording", {})
+    diar = raw.get("diarization", {})
 
     # Required key: output_folder
     if "output_folder" not in storage:
@@ -255,6 +267,9 @@ def load_config(ui_queue: queue.Queue | None = None) -> AppConfig:
         recording=RecordingConfig(
             input_device=rec.get("input_device") or None,
         ),
+        diarization=DiarizationConfig(
+            enabled=bool(diar.get("enabled", False)),
+        ),
     )
 
 
@@ -283,6 +298,9 @@ auto_open_summary = {"true" if cfg.behavior.auto_open_summary else "false"}
 
 [recording]
 input_device = "{_toml_basic_string(cfg.recording.input_device or "")}"
+
+[diarization]
+enabled = {"true" if cfg.diarization.enabled else "false"}
 """,
         encoding="utf-8",
     )

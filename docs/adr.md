@@ -186,3 +186,35 @@ The Fast/High Quality preset concept and the standalone Diarization toggle are b
 - Settings does NOT participate in the Workflow ↔ History block, by design: changing settings during a long transcription is a reasonable user expectation.
 - Apply runs `save_config` synchronously on the Tk main thread. Acceptable because `save_config` writes a small TOML file; if it ever grows expensive, move to a worker thread.
 - `ollama_client.list_installed_models` swallows connection errors and returns `None` so the Settings window can render a useful state when Ollama is down rather than crashing.
+
+---
+
+## ADR-007: Gate speaker diarization on preference AND capability, not on token presence
+
+### Context
+
+Diarization (pyannote.audio) is an optional, heavy extra. The progress bar in the workflow window listed a "Diarize" step whenever a `HUGGINGFACE_ACCESS_TOKEN` was set, and the pipeline built a `Diarizer` on the same condition with a `try/except ImportError` meant to degrade gracefully when pyannote was not installed.
+
+Two defects fell out of this:
+
+1. The `except ImportError` was dead code. `diarizer.py` imports pyannote lazily inside `Diarizer._load()`, not at module import time, so constructing `Diarizer(token)` never raises `ImportError`. With a token set but pyannote absent, the workflow showed a phantom "Diarize" step and the run crashed mid-transcription when `_load()` finally tried to import the missing package.
+2. There was no user-facing preference. Whether to diarize was implied by the presence of a token, which conflates "the user wants speaker labels" with "the machine can produce them".
+
+### Decision
+
+Separate **preference** from **capability** and require both.
+
+- **Preference** lives in config: `[diarization] enabled` (`DiarizationConfig`). This is the user's intent and is the only thing the Settings toggle and the installer write.
+- **Capability** is probed at runtime by `diarization.is_available()` = `pyannote_installed() AND token_present()`. `pyannote_installed()` uses `importlib.util.find_spec("pyannote.audio")`, which detects the package WITHOUT importing torch (heavy).
+- The single gate is `diarization.effective_enabled(cfg) = cfg.diarization.enabled AND is_available()`. Both the pipeline (`build_diarizer`) and the workflow window (`_has_diarizer`) call only this. The dead `try/except ImportError` is removed.
+
+`diarization.py` is also the single source of truth for the setup instructions (`SETUP_STEPS` / `render_setup_steps`). The installer banner and the Settings "How to enable" expander render the same text, so they cannot drift.
+
+### Consequences
+
+- No phantom "Diarize" step and no mid-run crash: a token set without pyannote installed yields `is_available() == False`, so nothing is built and no step is shown.
+- The installer writes `enabled` honestly: true only when the extra is installed AND a real (non-placeholder, uncommented) token already exists. A fresh clone gets `enabled = false`.
+- The `.env` scaffold ships the token line commented out, so `token_present()` is not fooled by a placeholder value.
+- The user can turn diarization on/off from Settings; when the capability is missing the toggle is replaced by an "Unavailable" label plus a "How to enable" expander with a "Re-check" button (calls `load_dotenv(override=True)` then re-probes; if still unavailable it keeps the instructions visible and shows `missing_reason()` instead of collapsing).
+- `config.memory_warning` also routes through `effective_enabled(cfg)`, so the diarizer's ~1.5 GB is only added to the RAM budget when diarization is both preferred and capable — a token set with the preference off no longer triggers a spurious low-memory warning.
+- Known limitation (tech debt): when Ollama is unreachable the Settings **Apply** button is disabled wholesale, so a diarization-toggle change made in that state is discarded along with the (unusable) model selection. The diarization toggle is independent of Ollama and could be saved separately; deferred because the workaround (start Ollama, then Apply) is obvious.

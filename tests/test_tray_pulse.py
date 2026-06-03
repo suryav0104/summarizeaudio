@@ -9,6 +9,7 @@ import pytest
 from summarizeaudio.config import (
     AppConfig,
     BehaviorConfig,
+    DiarizationConfig,
     OllamaConfig,
     RecordingConfig,
     StorageConfig,
@@ -51,6 +52,7 @@ def make_config(tmp_path: Path) -> AppConfig:
         summarization=SummarizationConfig(default_prompt="Summarize: {transcript}"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=None),
+        diarization=DiarizationConfig(enabled=False),
     )
 
 

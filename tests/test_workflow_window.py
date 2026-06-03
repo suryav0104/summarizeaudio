@@ -11,6 +11,7 @@ from summarizeaudio import workflow_window
 from summarizeaudio.config import (
     AppConfig,
     BehaviorConfig,
+    DiarizationConfig,
     OllamaConfig,
     RecordingConfig,
     StorageConfig,
@@ -27,6 +28,7 @@ def make_config(tmp_path: Path) -> AppConfig:
         summarization=SummarizationConfig(default_prompt="Summarize: {transcript}"),
         behavior=BehaviorConfig(show_override_dialog=False, auto_open_summary=False),
         recording=RecordingConfig(input_device=None),
+        diarization=DiarizationConfig(enabled=False),
     )
 
 
@@ -980,3 +982,28 @@ def test_start_pipeline_sets_idle_icon_even_when_run_raises(tmp_path, monkeypatc
         items.append(q.get_nowait())
 
     assert ("set_icon", "idle") in items
+
+
+def _bare_window(cfg, mode):
+    win = workflow_window.WorkflowWindow.__new__(workflow_window.WorkflowWindow)
+    win._cfg = cfg
+    win._mode = mode
+    return win
+
+
+def test_has_diarizer_true_when_effective_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr("summarizeaudio.diarization.effective_enabled", lambda cfg: True)
+    cfg = make_config(tmp_path)
+    win = _bare_window(cfg, "record")
+    assert win._has_diarizer() is True
+    assert "Diarize the audio" in win._steps_for_mode()
+
+
+def test_has_diarizer_false_when_not_effective_enabled(tmp_path, monkeypatch):
+    # Preference on but capability missing — workflow must NOT show the Diarize step.
+    monkeypatch.setattr("summarizeaudio.diarization.effective_enabled", lambda cfg: False)
+    cfg = make_config(tmp_path)
+    cfg.diarization.enabled = True
+    win = _bare_window(cfg, "record")
+    assert win._has_diarizer() is False
+    assert "Diarize the audio" not in win._steps_for_mode()
