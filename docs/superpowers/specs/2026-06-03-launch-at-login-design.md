@@ -56,7 +56,7 @@ def is_supported() -> bool:
     return sys.platform == "darwin"
 
 def plist_path() -> Path:
-    """~/Library/LaunchAgents/com.summarizeaudio.plist"""
+    """~/Library/LaunchAgents/<LABEL>.plist (filename derived from LABEL)."""
 
 def is_enabled() -> bool:
     """True when the LaunchAgent plist exists on disk."""
@@ -73,7 +73,8 @@ def _plist_contents() -> str:
 
 `is_enabled()` / `enable()` / `disable()` are safe to call on any platform but
 only meaningful on macOS; callers gate on `is_supported()` for UI visibility.
-`disable()` is idempotent (no error if the file is already gone).
+`disable()` is idempotent (no error if the file is already gone). `plist_path()`
+derives its filename from `LABEL` (`f"{LABEL}.plist"`) so the two cannot drift.
 
 ### The plist
 
@@ -82,8 +83,12 @@ Built from runtime values so it never hard-codes an install path:
 - `Label` = `com.summarizeaudio`
 - `ProgramArguments` = `[sys.executable, "-m", "summarizeaudio"]`
   (`sys.executable` is the venv's python, already absolute)
-- `WorkingDirectory` = `str(Path(sys.executable).parent.parent)`
-  (the install dir, so `load_dotenv()` finds `.env`)
+- `WorkingDirectory` = `str(Path(sys.executable).parents[2])`
+  (the install dir, so `load_dotenv()` finds `.env`). `sys.executable` is
+  `<install>/venv/bin/python`, so three hops up
+  (`bin → venv → install`) reach the install dir where `.env` and the
+  editable package live. `.parent.parent` would stop at `<install>/venv`,
+  which is wrong.
 - `RunAtLoad` = `true`
 - `EnvironmentVariables.PATH` =
   `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
@@ -125,9 +130,17 @@ On **Apply** (`_on_apply`), only when the dropdown value differs from
 - "On"  → `startup.enable()`
 - "Off" → `startup.disable()`
 
-Wrapped so a failure surfaces as an amber warning toast (consistent with the
-existing warning-toast convention) rather than crashing the window. The plist
-write/remove is the durable part.
+Wrapped so a failure surfaces via the Settings window's existing in-window error
+label (`self._error_label`, the same mechanism `_on_apply` already uses for
+`save_config` failures) rather than crashing the window. NOT a `warning_toast`:
+that queue message is only handled by `WorkflowWindow`, and Settings stacks
+independently (ADR-006), so a toast posted while only Settings is open would be
+silently dropped. The plist write/remove is the durable part.
+
+Ordering in `_on_apply`: the `startup.enable()/disable()` call happens only
+after the other Apply work (config mutation + `save_config`) has succeeded, so a
+`save_config` failure that aborts Apply does not leave the plist toggled out of
+sync with the rest of the applied settings.
 
 ### Modified: `setup.sh`
 
@@ -168,8 +181,11 @@ whether the plist file exists. No caching, no config mirror.
 
 - `enable()` / `disable()` are file operations; `disable()` is idempotent.
   `enable()` creates `~/Library/LaunchAgents` if missing.
-- Settings Apply wraps the call; on `OSError` it posts an amber warning toast and
-  leaves the dropdown reflecting the real on-disk state on next open.
+- Settings Apply wraps the call; on `OSError` it shows the message in the
+  Settings window's in-window error label (`self._error_label`) — the same path
+  used for `save_config` failures — and leaves the dropdown reflecting the real
+  on-disk state on next open. (No `warning_toast`: unreachable while only
+  Settings is open; see Settings section.)
 - Non-macOS: `is_supported()` False → row never built → `enable`/`disable` never
   called from the UI.
 
