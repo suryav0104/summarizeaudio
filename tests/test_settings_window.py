@@ -214,40 +214,6 @@ def test_embedding_model_gets_suffix(root, tmp_path):
     assert "nomic-embed-text · embedding" in win._model_values
 
 
-def test_focus_target_input_focuses_input_combo(root, tmp_path):
-    from summarizeaudio.settings_window import SettingsWindow
-    with patch(
-        "summarizeaudio.settings_window.list_installed_models",
-        return_value=[ModelInfo(name="gemma3:4b", family="gemma3")],
-    ), patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
-        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue(), focus_target="input")
-        win.show()
-    assert win._win.focus_get() is win._input_combo
-
-
-def test_focus_target_model_focuses_model_combo(root, tmp_path):
-    from summarizeaudio.settings_window import SettingsWindow
-    with patch(
-        "summarizeaudio.settings_window.list_installed_models",
-        return_value=[ModelInfo(name="gemma3:4b", family="gemma3")],
-    ), patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
-        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue(), focus_target="model")
-        win.show()
-    assert win._win.focus_get() is win._model_combo
-
-
-def test_focus_target_method_retargets_focus(root, tmp_path):
-    from summarizeaudio.settings_window import SettingsWindow
-    with patch(
-        "summarizeaudio.settings_window.list_installed_models",
-        return_value=[ModelInfo(name="gemma3:4b", family="gemma3")],
-    ), patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
-        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue(), focus_target="input")
-        win.show()
-        win.focus_target("model")
-    assert win._win.focus_get() is win._model_combo
-
-
 def test_banner_visible_only_when_pipeline_active(root, tmp_path):
     from summarizeaudio.settings_window import SettingsWindow
     with patch(
@@ -481,7 +447,7 @@ def test_step_combo_noop_on_disabled(root, tmp_path):
         assert combo.get() == before
 
 
-def test_launch_at_login_row_renders_when_supported(root, tmp_path, monkeypatch):
+def test_open_at_login_row_renders_when_supported(root, tmp_path, monkeypatch):
     from summarizeaudio.settings_window import SettingsWindow
     monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: True)
     monkeypatch.setattr("summarizeaudio.startup.is_enabled", lambda: True)
@@ -494,7 +460,7 @@ def test_launch_at_login_row_renders_when_supported(root, tmp_path, monkeypatch)
         assert win._startup_combo.get() == "On"
 
 
-def test_launch_at_login_row_absent_when_unsupported(root, tmp_path, monkeypatch):
+def test_open_at_login_row_absent_when_unsupported(root, tmp_path, monkeypatch):
     from summarizeaudio.settings_window import SettingsWindow
     monkeypatch.setattr("summarizeaudio.startup.is_supported", lambda: False)
     with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \

@@ -597,48 +597,6 @@ def test_startup_input_health_stops_active_recording_for_channel_mapping_issue(t
     assert notifications == [("Recording Input Problem", "channel mapping problem")]
 
 
-def test_rebuild_menu_has_input_audio_and_summarization_items(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: "BlackHole 2ch")
-    app = TrayApp()
-    app._tray = SimpleNamespace(menu=None)
-    app._rebuild_menu()
-
-    items = list(app._tray.menu.items)
-    texts = [getattr(item, "text", "") for item in items]
-    assert "Input  \u2192  Auto (BlackHole 2ch)" in texts
-    assert "Model  \u2192  gemma3:4b" in texts
-    assert not any("Fast Mode" in t for t in texts)
-    assert not any("High Quality Mode" in t for t in texts)
-    assert not any(t == "Summarization Model" for t in texts)
-
-
-def test_input_audio_label_uses_configured_name_when_set(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    app = TrayApp()
-    app._cfg.recording.input_device = "USB Mic"
-    assert app._input_audio_label() == "Input  \u2192  USB Mic"
-
-
-def test_input_audio_label_falls_back_when_resolution_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: None)
-    app = TrayApp()
-    assert app._input_audio_label() == "Input  \u2192  Auto (none)"
-
-
 def test_settings_click_enqueues_show_settings(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr(
@@ -650,78 +608,18 @@ def test_settings_click_enqueues_show_settings(tmp_path, monkeypatch):
     assert app._ui_queue.get_nowait() == ("show_settings",)
 
 
-def test_input_status_click_enqueues_show_settings_with_input_target(tmp_path, monkeypatch):
+def test_rebuild_menu_has_single_settings_item(tmp_path, monkeypatch):
     monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
     monkeypatch.setattr(
         "summarizeaudio.window_manager.WindowManager",
         lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
     )
-    app = TrayApp()
-    app._on_settings_click_input(None, None)
-    assert app._ui_queue.get_nowait() == ("show_settings", "input")
-
-
-def test_model_status_click_enqueues_show_settings_with_model_target(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    app = TrayApp()
-    app._on_settings_click_model(None, None)
-    assert app._ui_queue.get_nowait() == ("show_settings", "model")
-
-
-def test_diarization_label_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
-    app = TrayApp()
-    app._cfg.diarization.enabled = True  # preference on but capability gone
-    assert app._diarization_label() == "Diarization  \u2192  Unavailable"
-
-
-def test_diarization_label_on_and_off(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
-    app = TrayApp()
-    app._cfg.diarization.enabled = True
-    assert app._diarization_label() == "Diarization  \u2192  On"
-    app._cfg.diarization.enabled = False
-    assert app._diarization_label() == "Diarization  \u2192  Off"
-
-
-def test_rebuild_menu_has_diarization_item(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
-    monkeypatch.setattr("summarizeaudio.tray.resolve_auto_input_device_name", lambda: "BlackHole 2ch")
     app = TrayApp()
     app._tray = SimpleNamespace(menu=None)
     app._rebuild_menu()
     texts = [getattr(item, "text", "") for item in app._tray.menu.items]
-    assert "Diarization  \u2192  Unavailable" in texts
-
-
-def test_diarization_status_click_enqueues_show_settings_with_target(tmp_path, monkeypatch):
-    monkeypatch.setattr("summarizeaudio.tray.load_config", lambda _q=None: make_config(tmp_path, "gemma3:4b"))
-    monkeypatch.setattr(
-        "summarizeaudio.window_manager.WindowManager",
-        lambda cfg, ui_queue, on_icon_state=None, on_rebuild_tray=None: _fake_wm(),
-    )
-    app = TrayApp()
-    app._on_settings_click_diarization(None, None)
-    assert app._ui_queue.get_nowait() == ("show_settings", "diarization")
+    assert "Settings\u2026" in texts
+    assert not any("\u2192" in t for t in texts)  # no inline status items remain
 
 
 def test_on_rebuild_tray_request_calls_rebuild_menu(tmp_path, monkeypatch):

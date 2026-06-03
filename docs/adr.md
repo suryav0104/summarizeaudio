@@ -145,7 +145,7 @@ Both `WorkflowWindow` and `HistoryWindow` are redesigned to a streamlined ~560×
 ## ADR-006: Consolidate input device and summarization model into a Settings window
 
 **Date:** 2026-05-30
-**Status:** Accepted
+**Status:** Accepted (inline-status-item portion superseded by ADR-009, 2026-06-03; the inline `Input → …` / `Model → …` / `Diarization → …` tray items were later replaced by a single `Settings…` item)
 
 ### Context
 
@@ -257,3 +257,29 @@ The installer opt-in (`SUMMARIZEAUDIO_AUTOSTART=1 bash setup.sh`) calls `startup
 - No config drift: deleting the plist manually (or via `startup.disable()`) is the complete disable action.
 - `plistlib.dump` is used for serialization (correct typing, proper XML escaping) rather than hand-written XML.
 - macOS only. Windows and Linux do not surface the setting.
+
+---
+
+## ADR-009: Collapse the inline tray status items into a single Settings item
+
+**Date:** 2026-06-03
+**Status:** Accepted (supersedes the inline-status-item portion of ADR-006)
+
+### Context
+
+ADR-006 surfaced the current input device and model as inline tray status items (`Input → …`, `Model → …`), later joined by `Diarization → …`. Each item doubled as a deep-link that opened Settings with keyboard focus pre-placed on the matching dropdown. Supporting that required a `focus_target` parameter threaded through `WindowManager.show_settings` into `SettingsWindow`, plus `_apply_focus_target`, a public `focus_target()` retarget method, a `_diar_focus_widget` handle, and three per-item click handlers in the tray.
+
+The status items showed live state but were noisy, and the auto-select plumbing existed only to serve them.
+
+### Decision
+
+Replace the three inline status items with a single `Settings…` item at the end of the menu (above the Quit separator). It opens the Settings window with no auto-select. Delete the supporting code: `Tray._input_audio_label/_summarization_label/_diarization_label`, `_on_settings_click_input/model/diarization`, `WindowManager.show_settings(focus_target=…)`, and `SettingsWindow._focus_target/_apply_focus_target/focus_target()/_diar_focus_widget`. The now-unused `diarization` and `resolve_auto_input_device_name` imports are dropped from `tray.py`.
+
+Separately, the launch-at-login control is renamed from "Launch at Login" to **Open at Login** (matching macOS System Settings → Login Items terminology).
+
+### Consequences
+
+- Simpler menu and a whole layer of focus plumbing removed.
+- Tradeoff: the current input device / model / diarization state is no longer visible at a glance from the menu; it is seen only by opening Settings.
+- All four controls (input, model, diarization, Open at Login) continue to live in the Settings window unchanged.
+- The `("show_settings",)` queue message no longer carries a target argument.

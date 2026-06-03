@@ -16,7 +16,7 @@ REPO_URL="https://github.com/suryav0104/summarizeaudio.git"
 #          or:  curl -fsSL .../setup.sh | SUMMARIZEAUDIO_DIARIZATION=1 bash
 INSTALL_DIARIZATION="${SUMMARIZEAUDIO_DIARIZATION:-0}"
 
-# Opt-in launch-at-login. Enable with: SUMMARIZEAUDIO_AUTOSTART=1 bash setup.sh
+# Opt-in open-at-login. Enable with: SUMMARIZEAUDIO_AUTOSTART=1 bash setup.sh
 INSTALL_AUTOSTART="${SUMMARIZEAUDIO_AUTOSTART:-0}"
 
 select_model_for_ram() {
@@ -163,11 +163,11 @@ else
     success "SummarizeAudio installed"
 fi
 
-# Launch at login (opt-in)
+# Open at login (opt-in)
 if [[ "$INSTALL_AUTOSTART" == "1" ]]; then
-    info "Enabling launch at login..."
+    info "Enabling open at login..."
     venv/bin/python -c "from summarizeaudio import startup; startup.enable()"
-    success "Launch at login enabled (starts at next login)"
+    success "Open at login enabled (starts at next login)"
 fi
 
 # ── Write config if not already present ──────────────────────────────────────
@@ -284,7 +284,7 @@ echo "  SETTINGS"
 echo "    Edit $CONFIG_FILE"
 echo "    to change the AI model, language, or output folder."
 echo ""
-echo "  LAUNCH AT LOGIN"
+echo "  OPEN AT LOGIN"
 if [[ "$INSTALL_AUTOSTART" == "1" ]]; then
 echo "    Enabled. The app will start automatically at your next login."
 else

@@ -24,12 +24,10 @@ class SettingsWindow:
         cfg: AppConfig,
         ui_queue: queue.Queue,
         pipeline_active: bool = False,
-        focus_target: str | None = None,
     ) -> None:
         self._cfg = cfg
         self._ui_queue = ui_queue
         self._pipeline_active = pipeline_active
-        self._focus_target = focus_target
         self._win = tk.Toplevel(parent_root)
         self._win.withdraw()
         self._win.title("Settings")
@@ -100,10 +98,9 @@ class SettingsWindow:
         self._diar_steps_frame: tk.Frame | None = None
         self._diar_steps_visible: bool = False
         self._diar_steps_text: str = ""
-        self._diar_focus_widget: tk.Widget | None = None
         self._diar_recheck_note: tk.Label | None = None
 
-        # Launch-at-login row state (macOS only; None when unsupported).
+        # Open-at-login row state (macOS only; None when unsupported).
         self._startup_combo: ttk.Combobox | None = None
 
         self._build()
@@ -174,9 +171,9 @@ class SettingsWindow:
         self._diar_row.pack(anchor="w", fill="x", pady=(0, 12))
         self._render_diarization_row()
 
-        # Launch at Login (macOS only)
+        # Open at Login (macOS only)
         if startup.is_supported():
-            ttk.Label(body, text="Launch at Login", style="Step.TLabel").pack(anchor="w")
+            ttk.Label(body, text="Open at Login", style="Step.TLabel").pack(anchor="w")
             self._startup_combo = ttk.Combobox(
                 body, state="readonly", width=combo_width, values=["On", "Off"],
             )
@@ -317,7 +314,6 @@ class SettingsWindow:
             self._diar_combo.set("On" if self._cfg.diarization.enabled else "Off")
             self._diar_combo.pack(anchor="w", pady=(4, 0))
             self._bind_arrow_stepping(self._diar_combo)
-            self._diar_focus_widget = self._diar_combo
             self._resize_for_steps(False)
             return
 
@@ -333,7 +329,6 @@ class SettingsWindow:
         )
         self._diar_link.pack(side="left", padx=(8, 0))
         self._diar_link.bind("<Button-1>", lambda _e: self._on_diar_how_to_enable())
-        self._diar_focus_widget = self._diar_link
         self._resize_for_steps(False)
 
     def _on_diar_how_to_enable(self) -> None:
@@ -449,7 +444,6 @@ class SettingsWindow:
         self._center()
         self._win.deiconify()
         self._focus()
-        self._apply_focus_target()
 
     def _bind_arrow_stepping(self, combo: ttk.Combobox) -> None:
         """Make Up/Down cycle the value by one in a single press.
@@ -481,32 +475,6 @@ class SettingsWindow:
             combo.selection_range(0, "end")
             combo.event_generate("<<ComboboxSelected>>")
         return "break"
-
-    def _apply_focus_target(self) -> None:
-        target = self._focus_target
-        combo = None
-        if target == "input":
-            combo = self._input_combo
-        elif target == "model":
-            combo = self._model_combo
-        elif target == "diarization":
-            if self._diar_focus_widget is not None:
-                try:
-                    self._diar_focus_widget.focus_set()
-                except Exception:
-                    pass
-            return
-        if combo is not None:
-            try:
-                combo.focus_set()
-            except Exception:
-                pass
-
-    def focus_target(self, target: str) -> None:
-        """Used when SettingsWindow is already open and the user clicks the
-        other status item — refocus the matching combo."""
-        self._focus_target = target
-        self._apply_focus_target()
 
     def _center(self) -> None:
         self._win.update_idletasks()

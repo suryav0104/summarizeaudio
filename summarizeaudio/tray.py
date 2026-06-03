@@ -15,12 +15,11 @@ from typing import TYPE_CHECKING
 import pystray
 from PIL import Image
 
-from summarizeaudio import diarization
 from summarizeaudio.config import load_config
 from summarizeaudio.error_handler import format_error
 from summarizeaudio.notifier import notify
 from summarizeaudio.ollama_client import prewarm_async
-from summarizeaudio.recorder import Recorder, check_input_health, resolve_auto_input_device_name
+from summarizeaudio.recorder import Recorder, check_input_health
 
 if TYPE_CHECKING:
     from summarizeaudio.window_manager import WindowManager
@@ -442,35 +441,8 @@ class TrayApp:
     def _on_history(self, icon, item) -> None:
         self._ui_queue.put(("show_history",))
 
-    def _input_audio_label(self) -> str:
-        configured = self._cfg.recording.input_device
-        if configured:
-            return f"Input  \u2192  {configured}"
-        resolved = resolve_auto_input_device_name()
-        if resolved:
-            return f"Input  \u2192  Auto ({resolved})"
-        return "Input  \u2192  Auto (none)"
-
-    def _summarization_label(self) -> str:
-        return f"Model  \u2192  {self._cfg.ollama.model}"
-
-    def _diarization_label(self) -> str:
-        if not diarization.is_available():
-            return "Diarization  \u2192  Unavailable"
-        state = "On" if self._cfg.diarization.enabled else "Off"
-        return f"Diarization  \u2192  {state}"
-
     def _on_settings_click(self, icon, item) -> None:
         self._ui_queue.put(("show_settings",))
-
-    def _on_settings_click_input(self, icon, item) -> None:
-        self._ui_queue.put(("show_settings", "input"))
-
-    def _on_settings_click_model(self, icon, item) -> None:
-        self._ui_queue.put(("show_settings", "model"))
-
-    def _on_settings_click_diarization(self, icon, item) -> None:
-        self._ui_queue.put(("show_settings", "diarization"))
 
     def _on_rebuild_tray_request(self) -> None:
         # Runs on the Tk main thread (invoked from WindowManager._handle).
@@ -628,9 +600,7 @@ class TrayApp:
             items.append(pystray.Menu.SEPARATOR)
             items.append(pystray.MenuItem("History…", self._on_history))
             items.append(pystray.Menu.SEPARATOR)
-            items.append(pystray.MenuItem(self._input_audio_label(), self._on_settings_click_input))
-            items.append(pystray.MenuItem(self._summarization_label(), self._on_settings_click_model))
-            items.append(pystray.MenuItem(self._diarization_label(), self._on_settings_click_diarization))
+            items.append(pystray.MenuItem("Settings…", self._on_settings_click))
         else:
             items.append(pystray.MenuItem("Processing…", None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)

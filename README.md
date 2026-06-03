@@ -97,9 +97,7 @@ Click it to reveal the menu:
 | Transcribe Audio | Opens a file picker — choose an audio file to transcribe and summarize. |
 | Summarize Text | Opens a file picker — choose a `.txt` or `.md` transcript to summarize. |
 | History | Browse and reopen past sessions (recording, transcript, summary). |
-| Input  →  *device* | Shows the current recording input. Click to open Settings on the input picker. |
-| Model  →  *name* | Shows the current summarization model. Click to open Settings on the model picker. |
-| Settings | Change the recording input and summarization model, then Apply. |
+| Settings | Opens the Settings window: recording input, summarization model, speaker diarization, and Open at Login. Change them, then Apply. |
 | Quit | Closes the app and removes the icon from the menu bar. |
 
 While the app is working (transcribing or summarizing), the icon changes to indicate it is busy. When the summary is ready, a notification appears and the `.md` file opens automatically (if `auto_open_summary = true` in config).
@@ -132,7 +130,7 @@ Diarization labels each part of the transcript by speaker (`Speaker 1:`, `Speake
 2. **A HuggingFace access token is set** in the environment.
 3. **The toggle is enabled** in the app's Settings window.
 
-The first two are *capability* (can the machine do it?); the third is *preference* (do you want it?). The tray shows the current state as `Diarization → On / Off / Unavailable`, and you can finish the whole setup from inside the app — see [Enabling from the app](#4-enable-it-in-the-app) below.
+The first two are *capability* (can the machine do it?); the third is *preference* (do you want it?). You can finish the whole setup from inside the app's Settings window — see [Enabling from the app](#4-enable-it-in-the-app) below.
 
 ### 1. Install the extra
 
@@ -164,7 +162,7 @@ The `SUMMARIZEAUDIO_DIARIZATION=1` installer scaffolds this file with the token 
 
 ### 4. Enable it in the app
 
-Open **Settings** from the tray (or click the `Diarization → …` status item). The row is headed **Speaker Diarization (Label speakers in transcripts)**. When the capability is in place, you'll see an **On / Off** dropdown — set it to **On** and click **Apply**. When pyannote or the token is still missing, the same row shows **Unavailable** with a **How to enable** link that expands the same step-by-step instructions shown here, plus a **Re-check** button that re-reads `.env` so you don't have to relaunch after pasting a token.
+Open **Settings** from the tray. The row is headed **Speaker Diarization (Label speakers in transcripts)**. When the capability is in place, you'll see an **On / Off** dropdown — set it to **On** and click **Apply**. When pyannote or the token is still missing, the same row shows **Unavailable** with a **How to enable** link that expands the same step-by-step instructions shown here, plus a **Re-check** button that re-reads `.env` so you don't have to relaunch after pasting a token.
 
 ### Notes
 
@@ -174,9 +172,9 @@ Open **Settings** from the tray (or click the `Diarization → …` status item)
 
 ---
 
-## Launch at login (optional)
+## Open at Login (optional)
 
-To have SummarizeAudio start automatically when you log in, open **Settings** from the menu-bar icon, set **Launch at Login** to **On**, then click **Apply**. It takes effect at your next login.
+To have SummarizeAudio start automatically when you log in, open **Settings** from the menu-bar icon, set **Open at Login** to **On**, then click **Apply**. It takes effect at your next login.
 
 You can also enable it during install with an opt-in flag:
 

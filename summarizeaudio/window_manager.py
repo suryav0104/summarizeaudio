@@ -134,22 +134,13 @@ class WindowManager:
         self._history_win = HistoryWindow(self._root, self._cfg, self._ui_queue)
         self._history_win.show()
 
-    def show_settings(self, focus_target: str | None = None) -> None:
+    def show_settings(self) -> None:
         """Open the Settings window. Stacks on top of Workflow/History; refocuses
-        if already open. Does NOT participate in the Workflow ↔ History block.
-
-        ``focus_target`` may be ``"input"`` or ``"model"`` to direct keyboard
-        focus to the corresponding dropdown — used when the user clicks one of
-        the inline status items in the tray menu."""
+        if already open. Does NOT participate in the Workflow ↔ History block."""
         from summarizeaudio.settings_window import SettingsWindow
 
         if self._settings_win is not None and _win_alive(self._settings_win._win):
             self._settings_win._focus()
-            if focus_target:
-                try:
-                    self._settings_win.focus_target(focus_target)
-                except Exception:
-                    pass
             return
 
         self._settings_win = SettingsWindow(
@@ -157,7 +148,6 @@ class WindowManager:
             self._cfg,
             self._ui_queue,
             pipeline_active=self._last_pipeline_active,
-            focus_target=focus_target,
         )
         self._settings_win.show()
 
@@ -310,8 +300,7 @@ class WindowManager:
             self.show_history()
 
         elif kind == "show_settings":
-            target = item[1] if len(item) > 1 else None
-            self.show_settings(focus_target=target)
+            self.show_settings()
 
         elif kind == "rebuild_tray_menu":
             if self._on_rebuild_tray is not None:
