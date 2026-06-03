@@ -34,7 +34,7 @@ class SettingsWindow:
         self._win.withdraw()
         self._win.title("Settings")
         self._window_width = 480
-        self._window_height = 340
+        self._window_height = 360
         self._win.geometry(f"{self._window_width}x{self._window_height}")
         self._win.resizable(False, False)
         self._win.configure(bg="white")
@@ -282,14 +282,16 @@ class SettingsWindow:
             diarization.is_available() if available is None else available
         )
 
-        ttk.Label(self._diar_row, text="Speaker Diarization", style="Step.TLabel").pack(anchor="w")
+        # Heading reads identically in both states: a bold title plus a light
+        # parenthetical purpose caption on the same line.
+        heading = ttk.Frame(self._diar_row, style="SummarizeAudio.TFrame")
+        heading.pack(anchor="w")
+        ttk.Label(heading, text="Speaker Diarization", style="Step.TLabel").pack(side="left")
+        ttk.Label(
+            heading, text=" (Label speakers in transcripts)", style="Hint.TLabel"
+        ).pack(side="left", anchor="s", pady=(0, 2))
 
         if self._diar_available:
-            ttk.Label(
-                self._diar_row,
-                text="Label speakers in transcripts",
-                style="Hint.TLabel",
-            ).pack(anchor="w", pady=(2, 0))
             self._diar_combo = ttk.Combobox(
                 self._diar_row, state="readonly", width=self._combo_width,
                 values=["On", "Off"],

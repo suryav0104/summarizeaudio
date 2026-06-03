@@ -385,3 +385,52 @@ def test_diarization_dropdown_initial_on_when_enabled(root, tmp_path, monkeypatc
         win.show()
         assert win._diar_combo is not None
         assert win._diar_combo.get() == "On"
+
+
+def _diar_label_texts(win):
+    """Collect the text of every label in the diarization row, recursively."""
+    texts = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            try:
+                text = child.cget("text")
+            except Exception:
+                text = None
+            if text:
+                texts.append(text)
+            walk(child)
+
+    walk(win._diar_row)
+    return texts
+
+
+def test_diarization_heading_has_light_purpose_caption_when_available(root, tmp_path, monkeypatch):
+    """When available, the heading is the bold 'Speaker Diarization' plus a light
+    parenthetical purpose caption on the same line, and there is NO standalone
+    caption above the dropdown."""
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: True)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        texts = _diar_label_texts(win)
+        assert "Speaker Diarization" in texts
+        assert any("(Label speakers in transcripts)" in t for t in texts)
+        # The old standalone caption must be gone.
+        assert "Label speakers in transcripts" not in texts
+
+
+def test_diarization_heading_has_light_purpose_caption_when_unavailable(root, tmp_path, monkeypatch):
+    """The same parenthetical purpose caption shows in the unavailable state so
+    the heading reads identically whether or not diarization is set up."""
+    from summarizeaudio.settings_window import SettingsWindow
+    monkeypatch.setattr("summarizeaudio.diarization.is_available", lambda: False)
+    with patch("summarizeaudio.settings_window.list_installed_models", return_value=_fake_models()), \
+         patch("summarizeaudio.settings_window.sd.query_devices", side_effect=_query_devices_side_effect):
+        win = SettingsWindow(root, _cfg(tmp_path), queue.Queue())
+        win.show()
+        texts = _diar_label_texts(win)
+        assert "Speaker Diarization" in texts
+        assert any("(Label speakers in transcripts)" in t for t in texts)
