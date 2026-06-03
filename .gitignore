@@ -25,6 +25,12 @@ firebase-debug.log
 # Config with real values (lives in ~/.summarizeaudio/ — never in the repo)
 config.toml
 
+# Secrets (HUGGINGFACE_ACCESS_TOKEN etc.) — never in the repo
+.env
+
+# Tool state
+.playwright-mcp/
+
 # Worktrees
 .worktrees/
 

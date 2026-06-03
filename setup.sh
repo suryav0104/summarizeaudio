@@ -11,6 +11,11 @@ set -euo pipefail
 INSTALL_DIR="$HOME/Applications/SummarizeAudio"
 REPO_URL="https://github.com/suryav0104/summarizeaudio.git"
 
+# Opt-in speaker diarization (heavy: pulls pyannote.audio + torch/torchaudio).
+# Enable with:  SUMMARIZEAUDIO_DIARIZATION=1 bash setup.sh
+#          or:  curl -fsSL .../setup.sh | SUMMARIZEAUDIO_DIARIZATION=1 bash
+INSTALL_DIARIZATION="${SUMMARIZEAUDIO_DIARIZATION:-0}"
+
 select_model_for_ram() {
     local ram_bytes
     if [[ "$(uname)" == "Darwin" ]]; then
@@ -43,6 +48,15 @@ info()    { echo "[setup] $*"; }
 success() { echo "[setup] ✓ $*"; }
 warn()    { echo "[setup] ⚠ $*"; }
 die()     { echo "[setup] ✗ $*" >&2; exit 1; }
+
+# True only if .env has an UNCOMMENTED HUGGINGFACE_ACCESS_TOKEN set to a real
+# (non-placeholder, non-empty) value. Keeps the config "enabled" flag honest.
+real_hf_token_present() {
+    local env_file="$1"
+    [[ -f "$env_file" ]] || return 1
+    grep -E '^[[:space:]]*HUGGINGFACE_ACCESS_TOKEN=' "$env_file" 2>/dev/null \
+        | grep -vqE '=(hf_replace_me|hf_your_token_here)?[[:space:]]*$'
+}
 
 # ── Clone repo (curl-pipe mode only) ─────────────────────────────────────────
 if [[ "$RUNNING_VIA_CURL" -eq 1 ]]; then
@@ -134,14 +148,53 @@ if [[ ! -d venv ]]; then
     python3 -m venv venv
 fi
 
-info "Installing SummarizeAudio and dependencies..."
-venv/bin/pip install -e . -q
-success "SummarizeAudio installed"
+venv/bin/pip install --upgrade pip -q
+
+if [[ "$INSTALL_DIARIZATION" == "1" ]]; then
+    info "Installing SummarizeAudio with diarization extra (pyannote.audio + torch — large download)..."
+    venv/bin/pip install -e '.[diarization]' -q
+    success "SummarizeAudio installed (with diarization)"
+else
+    info "Installing SummarizeAudio and dependencies..."
+    venv/bin/pip install -e . -q
+    success "SummarizeAudio installed"
+fi
 
 # ── Write config if not already present ──────────────────────────────────────
 CONFIG_DIR="$HOME/.summarizeaudio"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR"
+
+# ── Diarization .env scaffold (opt-in) ───────────────────────────────────────
+if [[ "$INSTALL_DIARIZATION" == "1" ]]; then
+    ENV_FILE="$SCRIPT_DIR/.env"
+    if [[ ! -f "$ENV_FILE" ]]; then
+        info "Scaffolding $ENV_FILE for the HuggingFace token..."
+        cat > "$ENV_FILE" << 'ENV'
+# Speaker diarization is enabled when this token is set and pyannote.audio is installed.
+# 1. Create a HuggingFace account and a READ access token: https://huggingface.co/settings/tokens
+# 2. Accept the user conditions on BOTH gated models (logged in):
+#      https://huggingface.co/pyannote/speaker-diarization-3.1
+#      https://huggingface.co/pyannote/segmentation-3.0
+# 3. Uncomment the line below and paste your token, then relaunch the app.
+#HUGGINGFACE_ACCESS_TOKEN=hf_your_token_here
+ENV
+        warn "Diarization needs a HuggingFace token. Edit $ENV_FILE and:"
+        warn "  • create a READ token at https://huggingface.co/settings/tokens"
+        warn "  • accept terms on pyannote/speaker-diarization-3.1 AND pyannote/segmentation-3.0"
+        warn "  • replace hf_replace_me with your token, then relaunch."
+    else
+        success ".env already present — leaving HUGGINGFACE_ACCESS_TOKEN unchanged"
+    fi
+fi
+
+# Preference flag written to config: on only when the extra is installed AND a
+# real token already exists. A fresh scaffold has no real token, so this stays
+# false until the user pastes one and toggles it on (Settings or .env + re-check).
+DIARIZATION_ENABLED="false"
+if [[ "$INSTALL_DIARIZATION" == "1" ]] && real_hf_token_present "$SCRIPT_DIR/.env"; then
+    DIARIZATION_ENABLED="true"
+fi
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
     info "Writing config..."
@@ -175,6 +228,12 @@ Transcript:
 [behavior]
 show_override_dialog = true
 auto_open_summary = false
+
+[diarization]
+# Speaker labelling. This is your PREFERENCE; it only takes effect when
+# pyannote.audio is installed AND a HuggingFace token is set (see .env).
+# Toggle it from the app's Settings window.
+enabled = $DIARIZATION_ENABLED
 
 [recording]
 # Leave blank to auto-detect BlackHole (macOS) or WASAPI loopback (Windows).
@@ -214,4 +273,9 @@ echo ""
 echo "  SETTINGS"
 echo "    Edit $CONFIG_FILE"
 echo "    to change the AI model, language, or output folder."
+if [[ "$INSTALL_DIARIZATION" == "1" ]]; then
+echo ""
+echo "  DIARIZATION (speaker labelling) — finish these steps to enable:"
+venv/bin/python -c "from summarizeaudio import diarization; print(diarization.render_setup_steps('terminal'))"
+fi
 echo "══════════════════════════════════════════════════════════"
